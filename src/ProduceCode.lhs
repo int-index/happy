@@ -4,6 +4,7 @@ The code generator.
 (c) 1993-2001 Andy Gill, Simon Marlow
 -----------------------------------------------------------------------------
 
+> {-# LANGUAGE OverloadedStrings #-}
 > module ProduceCode (produceParser) where
 
 > import Paths_happy            ( version )
@@ -13,9 +14,12 @@ The code generator.
 > import GenUtils               ( mapDollarDollar, str, char, nl, strspace,
 >                                 interleave, interleave', maybestr,
 >                                 brack, brack' )
+> import HsSyn
+> import HsSynPpr
 
 > import Data.Maybe                     ( isJust, isNothing )
 > import Data.Char
+> import Data.String
 > import Data.List
 
 > import Control.Monad      ( forM_ )
@@ -69,21 +73,26 @@ Produce the complete output file.
 >               -- comment goes *after* the module header, so that we
 >               -- don't screw up any OPTIONS pragmas in the header.
 >       . produceAbsSynDecl . nl
->       . produceTypes
->       . produceExpListPerState
->       . produceActionTable target
->       . produceReductions
+>       . produceTypes . nl
+>       . produceExpListPerState . nl
+>       . produceActionTable target . nl
+>       . produceReductions . nl
 >       . produceTokenConverter . nl
->       . produceIdentityStuff
->       . produceMonadStuff
->       . produceEntries
->       . produceStrict strict
+>       . pstr produceIdentityStuff . nl
+>       . pstr produceMonadStuff . nl
+>       . produceEntries . nl
+>       . produceStrict strict . nl
 >       . produceAttributes attributes' attributetype' . nl
 >       . maybestr module_trailer . nl
 >       ) ""
 >  where
 >    n_starts = length starts'
 >    token = brack token_type'
+>    token' = fromString token_type' :: HsTy
+>    monad_then' = fromString monad_then :: HsExp
+>    monad_return' = fromString monad_return :: HsExp
+>    monad_context' = fromString monad_context :: HsTy
+>    monad_tycon' = fromString monad_tycon :: HsTy
 >
 >    nowarn_opts = str "{-# OPTIONS_GHC -w #-}" . nl
 >       -- XXX Happy-generated code is full of warnings.  Some are easy to
@@ -209,7 +218,7 @@ based parsers -- types aren't as important there).
 >             [ mkActionName i | (i,_action') <- zip [ 0 :: Int .. ]
 >                                                    (assocs action) ]
 >     . str " :: " . str monad_context . str " => "
->     . intMaybeHash . str " -> " . happyReductionValue . str "\n\n"
+>     . pstr intMaybeHash . str " -> " . happyReductionValue . str "\n\n"
 >     . interleave' ",\n "
 >             [ mkReduceFun i |
 >                     (i,_action) <- zip [ n_starts :: Int .. ]
@@ -219,8 +228,9 @@ based parsers -- types aren't as important there).
 
 >     | otherwise = id
 
->       where intMaybeHash | ghc       = str "Happy_GHC_Exts.Int#"
->                          | otherwise = str "Int"
+>       where intMaybeHash :: HsExp
+>             intMaybeHash | ghc       = qcon "Happy_GHC_Exts" "Int#"
+>                          | otherwise = con "Int"
 >             tokens =
 >               case lexer' of
 >                       Nothing -> char '[' . token . str "] -> "
@@ -244,7 +254,7 @@ based parsers -- types aren't as important there).
 >                    . str ")"
 >             happyReduction m =
 >                      str "\n\t   "
->                    . intMaybeHash
+>                    . pstr intMaybeHash
 >                    . str " \n\t-> " . token
 >                    . str "\n\t-> HappyState "
 >                    . token
@@ -743,23 +753,29 @@ outlaw them inside { }
 >    makeAbsSynCon = mkAbsSynCon nt_types_index
 
 
->    produceIdentityStuff | use_monad = id
->     | imported_identity' =
->            str "type HappyIdentity = Identity\n"
->          . str "happyIdentity = Identity\n"
->          . str "happyRunIdentity = runIdentity\n\n"
->     | otherwise =
->            str "newtype HappyIdentity a = HappyIdentity a\n"
->          . str "happyIdentity = HappyIdentity\n"
->          . str "happyRunIdentity (HappyIdentity a) = a\n\n"
->          . str "instance Functor HappyIdentity where\n"
->          . str "    fmap f (HappyIdentity a) = HappyIdentity (f a)\n\n"
->          . str "instance Applicative HappyIdentity where\n"
->          . str "    pure  = HappyIdentity\n"
->          . str "    (<*>) = ap\n"
->          . str "instance Monad HappyIdentity where\n"
->          . str "    return = pure\n"
->          . str "    (HappyIdentity p) >>= q = q p\n\n"
+>    produceIdentityStuff | use_monad = []
+>     | imported_identity' = [
+>         decType "HappyIdentity" (tyCon "Identity"),
+>         decFun "happyIdentity" [] (con "Identity"),
+>         decFun "happyRunIdentity" [] (var "runIdentity") ]
+>     | otherwise = [
+>         decNewtype "HappyIdentity" ["a"]
+>           (con "HappyIdentity") (tyVar "a"),
+>         decFun "happyIdentity" [] (con "HappyIdentity"),
+>         decFun "happyRunIdentity"
+>           [patCon "HappyIdentity" [var "a"]] (var "a"),
+>         decInst (tyCon "Functor") [tyCon "HappyIdentity"] [
+>           decFun "fmap"
+>             [var "f", patCon "HappyIdentity" [var "a"]]
+>             (con "HappyIdentity" % (var "f" % var "a")) ],
+>         decInst (tyCon "Applicative") [tyCon "HappyIdentity"] [
+>           decFun "pure" [] (con "HappyIdentity"),
+>           decFun "<*>" [] (var "ap") ],
+>         decInst (tyCon "Monad") [tyCon "HappyIdentity"] [
+>           decFun "return" [] (var "pure"),
+>           decFun ">>="
+>             [patCon "HappyIdentity" [var "p"], var "q"]
+>             (var "q" % var "p") ] ]
 
 MonadStuff:
 
@@ -785,43 +801,53 @@ MonadStuff:
         happyReturn1 = happyReturn
 
 
->    produceMonadStuff =
->            let pcont = str monad_context in
->            let pty = str monad_tycon in
->            str "happyThen :: " . pcont . str " => " . pty
->          . str " a -> (a -> "  . pty
->          . str " b) -> " . pty . str " b\n"
->          . str "happyThen = " . brack monad_then . nl
->          . str "happyReturn :: " . pcont . str " => a -> " . pty . str " a\n"
->          . str "happyReturn = " . brack monad_return . nl
->          . case lexer' of
->               Nothing ->
->                  str "happyThen1 m k tks = (" . str monad_then
->                . str ") m (\\a -> k a tks)\n"
->                . str "happyReturn1 :: " . pcont . str " => a -> b -> " . pty . str " a\n"
->                . str "happyReturn1 = \\a tks -> " . brack monad_return
->                . str " a\n"
->                . str "happyError' :: " . str monad_context . str " => (["
->                . token
->                . str "], [String]) -> "
->                . str monad_tycon
->                . str " a\n"
->                . str "happyError' = "
->                . str (if use_monad then "" else "HappyIdentity . ")
->                . errorHandler
->                . str "\n\n"
->               _ ->
->                  str "happyThen1 = happyThen\n"
->                . str "happyReturn1 :: " . pcont . str " => a -> " . pty . str " a\n"
->                . str "happyReturn1 = happyReturn\n"
->                . str "happyError' :: " . str monad_context . str " => ("
->                                        . token . str ", [String]) -> "
->                . str monad_tycon
->                . str " a\n"
->                . str "happyError' tk = "
->                . str (if use_monad then "" else "HappyIdentity ")
->                . errorHandler . str " tk\n"
->                . str "\n"
+>    produceMonadStuff = [
+>          decTypeSig "happyThen" (
+>            monad_context' `tyCtx`
+>            monad_tycon' % tyVar "a" `tyArr`
+>            (tyVar "a" `tyArr` monad_tycon' % tyVar "b") `tyArr`
+>            monad_tycon' % tyVar "b" ),
+>          decFun "happyThen" [] monad_then',
+>          decTypeSig "happyReturn" (
+>             monad_context' `tyCtx`
+>             tyVar "a" `tyArr`
+>             monad_tycon' % tyVar "a" ),
+>          decFun "happyReturn" [] monad_return' ] ++
+>          case lexer' of
+>            Nothing -> [
+>              decFun "happyThen1" [var "m", var "k", var "tks"] (
+>                monad_then' %
+>                var "m" %
+>                (var "a" `expLam` var "k" % var "a" % var "tks") ),
+>              decTypeSig "happyReturn1" (
+>                monad_context' `tyCtx`
+>                tyVar "a" `tyArr`
+>                tyVar "b" `tyArr`
+>                monad_tycon' % tyVar "a" ),
+>              decFun "happyReturn1" []
+>                (var "a" `expLam` var "tks" `expLam`
+>                  monad_return' % var "a"),
+>              decTypeSig "happyError'" (
+>                monad_context' `tyCtx`
+>                tyTup [tyList token', tyList (tyVar "String")] `tyArr`
+>                monad_tycon' % tyVar "a" ),
+>              decFun "happyError'" [] (
+>                (if use_monad then id else (\x -> var "." % con "HappyIdentity" % x))
+>                errorHandler' ) ]
+>            _ -> [
+>              decFun "happyThen1" [] (var "happyThen"),
+>              decTypeSig "happyReturn1" (
+>                monad_context' `tyCtx`
+>                tyVar "a" `tyArr`
+>                monad_tycon' % tyVar "a" ),
+>              decFun "happyReturn1" [] (var "happyReturn"),
+>              decTypeSig "happyError'" (
+>                monad_context' `tyCtx`
+>                tyTup [token', tyList (tyVar "String")] `tyArr`
+>                monad_tycon' % tyVar "a" ),
+>              decFun "happyError'" [var "tk"] (
+>                (if use_monad then id else (con "HappyIdentity" %))
+>                (errorHandler' % var "tk") ) ]
 
 An error handler specified with %error is passed the current token
 when used with %lexer, but happyError (the old way but kept for
@@ -836,6 +862,7 @@ directive determins the API of the provided function.
 >               Nothing -> case lexer' of
 >                               Nothing -> str "(\\(tokens, _) -> happyError tokens)"
 >                               Just _  -> str "(\\(tokens, explist) -> happyError)"
+>    errorHandler' = fromString (errorHandler "") :: HsExp
 
 >    reduceArrElem n
 >      = str "\t(" . shows n . str " , "

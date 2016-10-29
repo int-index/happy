@@ -8,33 +8,43 @@ module HsSyn
   , HsQual(..)
   , HsExp(..)
   , expLam
+  , expApp
   , HsTy(..)
   , tyCtx
   , tyArr
+  , tyForall
   , tyTup
   , tyList
+  , tyApp
   , HsPat(..)
   , patCon
   , patTup
   , patWild
   , HsDec(..)
+  , decPragma
+  , decInlinePragma
+  , decCppIfElse
   , decType
   , decNewtype
+  , decData
   , decVal
   , decFun
   , decTypeSig
   , decInst
   ---
   , FromTyCon(..)
+  , FromQTyCon(..)
   , FromCon(..)
   , FromQCon(..)
   , FromVar(..)
+  , FromQVar(..)
   , FromTyVar(..)
   , FromApp(..)
   ) where
 
 import Data.Char
 import Data.String
+import Data.List (foldl')
 
 newtype HsVar = HsVar String
 
@@ -80,6 +90,9 @@ expLam = HsExpLam
 
 infixr 2 `expLam`
 
+expApp :: HsExp -> [HsExp] -> HsExp
+expApp = foldl' (%)
+
 data HsTy =
   HsTyUnsafeString String |
   HsTyTyVar HsTyVar |
@@ -88,7 +101,8 @@ data HsTy =
   HsTyList HsTy |
   HsTyApp HsTy HsTy |
   HsTyCtx HsTy HsTy |
-  HsTyArr HsTy HsTy
+  HsTyArr HsTy HsTy |
+  HsTyForall HsTyVar HsTy
 
 instance IsString HsTy where
   fromString "()" = HsTyTup []
@@ -107,11 +121,19 @@ tyArr = HsTyArr
 
 infixr 2 `tyArr`
 
+tyForall :: HsTyVar -> HsTy -> HsTy
+tyForall = HsTyForall
+
+infixr 2 `tyForall`
+
 tyTup :: [HsTy] -> HsTy
 tyTup = HsTyTup
 
 tyList :: HsTy -> HsTy
 tyList = HsTyList
+
+tyApp :: HsTy -> [HsTy] -> HsTy
+tyApp = foldl' (%)
 
 data HsPat =
   HsPatVar HsVar |
@@ -129,18 +151,34 @@ patWild :: HsPat
 patWild = HsPatWild
 
 data HsDec =
+  HsDecPragma String String |
+  HsDecInlinePragma HsVar |
+  HsDecCppIfElse String HsDec HsDec |
   HsDecType HsTyCon HsTy |
   HsDecNewtype HsTyCon [HsTyVar] HsCon HsTy |
+  HsDecData HsTyCon [HsTyVar] [(HsCon, [HsTy])] |
   HsDecPatBind HsPat HsExp |
   HsDecFunBind HsVar [HsPat] HsExp |
   HsDecTypeSig HsVar HsTy |
   HsDecInst HsTyCon [HsTy] [HsDec]
+
+decPragma :: String -> String -> HsDec
+decPragma = HsDecPragma
+
+decInlinePragma :: HsVar -> HsDec
+decInlinePragma = HsDecInlinePragma
+
+decCppIfElse :: String -> HsDec -> HsDec -> HsDec
+decCppIfElse = HsDecCppIfElse
 
 decType :: HsTyCon -> HsTy -> HsDec
 decType = HsDecType
 
 decNewtype :: HsTyCon -> [HsTyVar] -> HsCon -> HsTy -> HsDec
 decNewtype = HsDecNewtype
+
+decData :: HsTyCon -> [HsTyVar] -> [(HsCon, [HsTy])] -> HsDec
+decData = HsDecData
 
 decVal :: HsPat -> HsExp -> HsDec
 decVal = HsDecPatBind
@@ -169,6 +207,16 @@ instance FromTyCon HsTy where
   tyCon s = HsTyTyCon (tyCon s)
 
 
+class FromQTyCon a where
+  qtyCon :: HsModuleName -> HsTyCon -> a
+
+instance FromTyCon a => FromQTyCon (HsQual a) where
+  qtyCon modname tc = HsQual (Just modname) (tyCon tc)
+
+instance FromQTyCon HsTy where
+  qtyCon modname tc = HsTyTyCon (qtyCon modname tc)
+
+
 class FromCon a where
   con :: HsCon -> a
 
@@ -184,6 +232,7 @@ instance FromCon HsExp where
 instance FromCon HsPat where
   con s = patCon s []
 
+
 class FromQCon a where
   qcon :: HsModuleName -> HsCon -> a
 
@@ -192,6 +241,7 @@ instance FromCon a => FromQCon (HsQual a) where
 
 instance FromQCon HsExp where
   qcon modname c = HsExpCon (qcon modname c)
+
 
 class FromVar a where
   var :: HsVar -> a
@@ -207,6 +257,16 @@ instance FromVar HsExp where
 
 instance FromVar HsPat where
   var s = HsPatVar (var s)
+
+
+class FromQVar a where
+  qvar :: HsModuleName -> HsVar -> a
+
+instance FromVar a => FromQVar (HsQual a) where
+  qvar modname v = HsQual (Just modname) (var v)
+
+instance FromQVar HsExp where
+  qvar modname v = HsExpVar (qvar modname v)
 
 
 class FromTyVar a where

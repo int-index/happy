@@ -67,12 +67,12 @@ Produce the complete output file.
 >               })
 >               action goto top_options module_header module_trailer
 >               target coerce ghc strict
->     = ( top_opts
+>     = ( pstr top_opts . nl
 >       . maybestr module_header . nl
 >       . str comment
 >               -- comment goes *after* the module header, so that we
 >               -- don't screw up any OPTIONS pragmas in the header.
->       . produceAbsSynDecl . nl
+>       . pstr produceAbsSynDecl . nl
 >       . produceTypes . nl
 >       . produceExpListPerState . nl
 >       . produceActionTable target . nl
@@ -94,18 +94,15 @@ Produce the complete output file.
 >    monad_context' = fromString monad_context :: HsTy
 >    monad_tycon' = fromString monad_tycon :: HsTy
 >
->    nowarn_opts = str "{-# OPTIONS_GHC -w #-}" . nl
+>    nowarn_opts = decPragma "OPTIONS_GHC" "-w"
 >       -- XXX Happy-generated code is full of warnings.  Some are easy to
 >       -- fix, others not so easy, and others would require GHC version
 >       -- #ifdefs.  For now I'm just disabling all of them.
 >
->    top_opts = nowarn_opts .
+>    top_opts = nowarn_opts :
 >      case top_options of
->          "" -> str ""
->          _  -> str (unwords [ "{-# OPTIONS"
->                             , top_options
->                             , "#-}"
->                             ]) . nl
+>        "" -> []
+>        _  -> [decPragma "OPTIONS" top_options]
 
 %-----------------------------------------------------------------------------
 Make the abstract syntax type declaration, of the form:
@@ -133,40 +130,40 @@ If we're using coercions, we need to generate the injections etc.
         happyOut<n> x = unsafeCoerce# x
         {-# INLINE happyOut<n> #-}
 
->     | coerce
->       = let
->             happy_item = str "HappyAbsSyn " . str_tyvars
->             bhappy_item = brack' happy_item
+>     | coerce =
+>       let
+>         happy_item = tyApp (tyCon "HappyAbsSyn") all_tyvars'
 >
->             inject n ty
->               = mkHappyIn n . str " :: " . type_param n ty
->               . str " -> " . bhappy_item . char '\n'
->               . mkHappyIn n . str " x = Happy_GHC_Exts.unsafeCoerce# x\n"
->               . str "{-# INLINE " . mkHappyIn n . str " #-}"
+>         inject n ty = [
+>           decTypeSig (var (mkHappyIn' n))
+>             (tyVar (type_param n ty) `tyArr` happy_item),
+>           decFun (var (mkHappyIn' n)) [var "x"]
+>             (qvar "Happy_GHC_Exts" "unsafeCoerce#" % "x" :: HsExp),
+>           decInlinePragma (mkHappyIn' n) ]
 >
->             extract n ty
->               = mkHappyOut n . str " :: " . bhappy_item
->               . str " -> " . type_param n ty . char '\n'
->               . mkHappyOut n . str " x = Happy_GHC_Exts.unsafeCoerce# x\n"
->               . str "{-# INLINE " . mkHappyOut n . str " #-}"
->         in
->           str "newtype " . happy_item . str " = HappyAbsSyn HappyAny\n" -- see NOTE below
->         . interleave "\n" (map str
->           [ "#if __GLASGOW_HASKELL__ >= 607",
->             "type HappyAny = Happy_GHC_Exts.Any",
->             "#else",
->             "type HappyAny = forall a . a",
->             "#endif" ])
->         . interleave "\n"
->           [ inject n ty . nl . extract n ty | (n,ty) <- assocs nt_types ]
->         -- token injector
->         . str "happyInTok :: " . token . str " -> " . bhappy_item
->         . str "\nhappyInTok x = Happy_GHC_Exts.unsafeCoerce# x\n{-# INLINE happyInTok #-}\n"
->         -- token extractor
->         . str "happyOutTok :: " . bhappy_item . str " -> " . token
->         . str "\nhappyOutTok x = Happy_GHC_Exts.unsafeCoerce# x\n{-# INLINE happyOutTok #-}\n"
-
->         . str "\n"
+>         extract n ty = [
+>           decTypeSig (var (mkHappyOut' n))
+>             (happy_item `tyArr` tyVar (type_param n ty)),
+>           decFun (var (mkHappyOut' n)) [var "x"]
+>             (qvar "Happy_GHC_Exts" "unsafeCoerce#" % "x" :: HsExp),
+>           decInlinePragma (mkHappyOut' n) ]
+>       in
+>         [ decNewtype "HappyAbsSyn" all_tyvars' -- see NOTE below
+>             (con "HappyAbsSyn") (tyCon "HappyAny"),
+>           decCppIfElse "__GLASGOW_HASKELL__ >= 607"
+>             (decType "HappyAny" (qtyCon "Happy_GHC_Exts" "Any"))
+>             (decType "HappyAny" ("a" `tyForall` tyVar "a")) ] ++
+>         concat [ inject n ty ++ extract n ty | (n,ty) <- assocs nt_types ] ++
+>          -- token injector
+>         [ decTypeSig "happyInTok" (token' `tyArr` happy_item),
+>           decFun "happyInTok" [var "x"]
+>             (qvar "Happy_GHC_Exts" "unsafeCoerce#" % var "x"),
+>           decInlinePragma "happyInTok" ] ++
+>           -- token extractor
+>         [ decTypeSig "happyOutTok" (happy_item `tyArr` token'),
+>           decFun "happyOutTok" [var "x"]
+>             (qvar "Happy_GHC_Exts" "unsafeCoerce#" % var "x"),
+>           decInlinePragma "happyOutTok" ]
 
 NOTE: in the coerce case we always coerce all the semantic values to
 HappyAbsSyn which is declared to be a synonym for Any.  This is the
@@ -187,17 +184,22 @@ example where this matters.
 
 ... Otherwise, output the declaration in full...
 
->     | otherwise
->       = str "data HappyAbsSyn " . str_tyvars
->       . str "\n\t= HappyTerminal " . token
->       . str "\n\t| HappyErrorToken Int\n"
->       . interleave "\n"
->         [ str "\t| " . makeAbsSynCon n . strspace . type_param n ty
->         | (n, ty) <- assocs nt_types,
->           (nt_types_index ! n) == n]
+>     | otherwise =
+>       let
+>         absSynCons =
+>           [ ("HappyTerminal", [token']),
+>             ("HappyErrorToken", [tyCon "Int"]) ] ++
+>           [ (makeAbsSynCon' n, [tyVar (type_param n ty)]) |
+>             (n, ty) <- assocs nt_types,
+>             (nt_types_index ! n) == n ]
+>       in
+>         [ decData "HappyAbsSyn" all_tyvars' absSynCons ]
 
->     where all_tyvars = [ 't':show n | (n, Nothing) <- assocs nt_types ]
->           str_tyvars = str (unwords all_tyvars)
+>     where
+>       all_tyvars' :: FromTyVar a => [a]
+>       all_tyvars' = [
+>         tyVar (fromString ('t':show n)) |
+>         (n, Nothing) <- assocs nt_types ]
 
 %-----------------------------------------------------------------------------
 Type declarations of the form:
@@ -751,6 +753,7 @@ outlaw them inside { }
 >       assoc_list = [ (b,a) | (a, Just b) <- assocs nt_types ]
 
 >    makeAbsSynCon = mkAbsSynCon nt_types_index
+>    makeAbsSynCon' = mkAbsSynCon' nt_types_index
 
 
 >    produceIdentityStuff | use_monad = []
@@ -1323,18 +1326,25 @@ slot is free or not.
 > mkAbsSynCon :: Array Int Int -> Int -> String -> String
 > mkAbsSynCon fx t      = str "HappyAbsSyn"   . shows (fx ! t)
 
+> mkAbsSynCon' :: Array Int Int -> Int -> HsCon
+> mkAbsSynCon' fx t = fromString $ "HappyAbsSyn" ++ show (fx ! t)
+
 > mkHappyVar, mkReduceFun, mkDummyVar :: Int -> String -> String
 > mkHappyVar n          = str "happy_var_"    . shows n
 > mkReduceFun n         = str "happyReduce_"  . shows n
 > mkDummyVar n          = str "happy_x_"      . shows n
 
 > mkHappyIn, mkHappyOut :: Int -> String -> String
-> mkHappyIn n           = str "happyIn"  . shows n
-> mkHappyOut n          = str "happyOut" . shows n
+> mkHappyIn n           = pstr (mkHappyIn' n)
+> mkHappyOut n          = pstr (mkHappyOut' n)
 
-> type_param :: Int -> Maybe String -> ShowS
-> type_param n Nothing   = char 't' . shows n
-> type_param _ (Just ty) = brack ty
+> mkHappyIn', mkHappyOut' :: Int -> HsVar
+> mkHappyIn' n           = fromString ("happyIn" ++ show n)
+> mkHappyOut' n          = fromString ("happyOut" ++ show n)
+
+> type_param :: Int -> Maybe String -> HsTyVar
+> type_param n Nothing = fromString ('t' : show n)
+> type_param _ (Just ty) = fromString ty
 
 > specReduceFun :: Int -> Bool
 > specReduceFun = (<= 3)

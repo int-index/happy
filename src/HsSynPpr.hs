@@ -37,7 +37,8 @@ data Level =
   LevelSymbol (Maybe Fixity) |
   LevelUniv |
   LevelLam |
-  LevelInfix Fixity
+  LevelInfix Fixity |
+  LevelComment
 
 levelArr :: Level
 levelArr = LevelInfix (Rightfix 0)
@@ -54,7 +55,9 @@ data LevelCtx =
   LevelCtxElem |
   LevelCtxCon |
   LevelCtxInfixLhs Fixity |
-  LevelCtxInfixRhs Fixity
+  LevelCtxInfixRhs Fixity |
+  LevelCtxCommentBefore |
+  LevelCtxCommentAfter
 
 levelCtxAppLhs :: LevelCtx
 levelCtxAppLhs = LevelCtxInfixLhs (Leftfix 10)
@@ -114,6 +117,17 @@ instance Ppr a => Ppr (HsQual a) where
     let (lvl, aDoc) = ppr a
     in (lvl, ppr' LevelCtxUniv modname <> "." <> aDoc)
 
+pprCommentOpen :: HsComment -> (Level, Doc)
+pprCommentOpen (HsComment ls) = case ls of
+  []  -> (LevelAtom, empty)
+  [l] -> (LevelUniv, "--" <+> text l)
+  _   -> (LevelAtom, hang "{-" 3 (vsep $ map text ls) $+$ "-}")
+
+pprCommentClosed :: HsComment -> Doc
+pprCommentClosed (HsComment ls) = case ls of
+  [] -> empty
+  _  -> "{-" <+> vsep (map text ls) <+> "-}"
+
 instance Ppr HsExp where
   ppr (HsExpUnsafeString s) = (LevelUniv, text s)
   ppr (HsExpVar v) = ppr v
@@ -126,10 +140,16 @@ instance Ppr HsExp where
     in (LevelLam, hang ("\\" <> pDoc <+> "->") tw eDoc)
 
 pprTuple :: [Doc] -> Doc
-pprTuple = parens . hsep . punctuate comma 
+pprTuple = parens . hsep . punctuate comma
 
 instance Ppr HsTy where
   ppr (HsTyUnsafeString s) = (LevelUniv, text s)
+  ppr (HsTyCommentBefore com t) =
+    let tDoc = ppr' LevelCtxCommentBefore t; comDoc = pprCommentClosed com
+    in (LevelComment, sep [comDoc, tDoc])
+  ppr (HsTyCommentAfter com t) =
+    let tDoc = ppr' LevelCtxCommentAfter t; comDoc = pprCommentClosed com
+    in (LevelComment, sep [tDoc, comDoc])
   ppr (HsTyTyVar tv) = ppr tv
   ppr (HsTyTyCon tc) = ppr tc
   ppr (HsTyTup ts) =
@@ -168,6 +188,7 @@ instance Ppr [HsDec] where
     in (LevelUniv, vsep dsDocs)
 
 instance Ppr HsDec where
+  ppr (HsDecComment com) = pprCommentOpen com
   ppr (HsDecPragma name content) =
     let nameDoc = text (map toUpper name); contentDoc = text content
     in (LevelUniv, "{-#" <+> nameDoc <+> contentDoc <+> "#-}" )
@@ -182,9 +203,13 @@ instance Ppr HsDec where
           "#else",
           ppr' LevelCtxUniv elseD,
           "#endif" ]
-  ppr (HsDecType tc t) =
-    let tcDoc = ppr' LevelCtxNameBind tc; tDoc = ppr' LevelCtxLamBody t
-    in (LevelUniv, hang ("type" <+> tcDoc <+> equals) tw tDoc)
+  ppr (HsDecType tc tvs t) =
+    (LevelUniv, hang (headerDoc <+> equals) tw tDoc)
+    where
+      tcDoc = ppr' LevelCtxNameBind tc
+      tDoc = ppr' LevelCtxLamBody t
+      tvsDocs = map (ppr' LevelCtxLamPat) tvs
+      headerDoc = hsep ("type" : tcDoc : tvsDocs)
   ppr (HsDecNewtype tc tvs c t) =
     (LevelUniv, hang (headerDoc <+> equals) tw cdDoc)
     where
@@ -216,9 +241,12 @@ instance Ppr HsDec where
       psDocs = map (ppr' LevelCtxLamPat) ps
       headerDoc = hsep (vDoc : psDocs)
       eDoc = ppr' LevelCtxLamBody e
-  ppr (HsDecTypeSig v t) =
-    let vDoc = ppr' LevelCtxNameBind v; tDoc = ppr' LevelCtxLamBody t
-    in (LevelUniv, hang (vDoc <+> "::") tw tDoc)
+  ppr (HsDecTypeSig vs t) =
+    (LevelUniv, hang (headerDoc <+> "::") tw tDoc)
+    where
+      vsDocs = map (ppr' LevelCtxNameBind) vs
+      tDoc = ppr' LevelCtxLamBody t
+      headerDoc = hsep (punctuate "," vsDocs)
   ppr (HsDecInst tc ts ds) =
     (LevelUniv, instDoc)
     where

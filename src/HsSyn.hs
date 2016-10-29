@@ -6,10 +6,14 @@ module HsSyn
   , HsTyCon(..)
   , HsModuleName(..)
   , HsQual(..)
+  , HsComment(..)
+  , comment
   , HsExp(..)
   , expLam
   , expApp
   , HsTy(..)
+  , tyCommentBefore
+  , tyCommentAfter
   , tyCtx
   , tyArr
   , tyForall
@@ -21,6 +25,7 @@ module HsSyn
   , patTup
   , patWild
   , HsDec(..)
+  , decComment
   , decPragma
   , decInlinePragma
   , decCppIfElse
@@ -73,6 +78,14 @@ instance IsString HsModuleName where
 
 data HsQual a = HsQual (Maybe HsModuleName) a
 
+newtype HsComment = HsComment [String]
+
+comment :: String -> HsComment
+comment = HsComment . lines
+
+instance IsString HsComment where
+  fromString = comment
+
 data HsExp =
   HsExpUnsafeString String |
   HsExpVar (HsQual HsVar) |
@@ -95,6 +108,8 @@ expApp = foldl' (%)
 
 data HsTy =
   HsTyUnsafeString String |
+  HsTyCommentBefore HsComment HsTy |
+  HsTyCommentAfter HsComment HsTy |
   HsTyTyVar HsTyVar |
   HsTyTyCon (HsQual HsTyCon) |
   HsTyTup [HsTy] |
@@ -109,6 +124,12 @@ instance IsString HsTy where
   fromString s@(c:_) | all isAlpha s =
     if isUpper c then tyCon (fromString s) else tyVar (fromString s)
   fromString s = HsTyUnsafeString s
+
+tyCommentBefore :: String -> HsTy -> HsTy
+tyCommentBefore = HsTyCommentBefore . fromString
+
+tyCommentAfter :: String -> HsTy -> HsTy
+tyCommentAfter = HsTyCommentAfter . fromString
 
 tyCtx :: HsTy -> HsTy -> HsTy
 tyCtx (HsTyTup []) t = t
@@ -151,16 +172,20 @@ patWild :: HsPat
 patWild = HsPatWild
 
 data HsDec =
+  HsDecComment HsComment |
   HsDecPragma String String |
   HsDecInlinePragma HsVar |
   HsDecCppIfElse String HsDec HsDec |
-  HsDecType HsTyCon HsTy |
+  HsDecType HsTyCon [HsTyVar] HsTy |
   HsDecNewtype HsTyCon [HsTyVar] HsCon HsTy |
   HsDecData HsTyCon [HsTyVar] [(HsCon, [HsTy])] |
   HsDecPatBind HsPat HsExp |
   HsDecFunBind HsVar [HsPat] HsExp |
-  HsDecTypeSig HsVar HsTy |
+  HsDecTypeSig [HsVar] HsTy |
   HsDecInst HsTyCon [HsTy] [HsDec]
+
+decComment :: String -> HsDec
+decComment = HsDecComment . fromString
 
 decPragma :: String -> String -> HsDec
 decPragma = HsDecPragma
@@ -171,7 +196,7 @@ decInlinePragma = HsDecInlinePragma
 decCppIfElse :: String -> HsDec -> HsDec -> HsDec
 decCppIfElse = HsDecCppIfElse
 
-decType :: HsTyCon -> HsTy -> HsDec
+decType :: HsTyCon -> [HsTyVar] -> HsTy -> HsDec
 decType = HsDecType
 
 decNewtype :: HsTyCon -> [HsTyVar] -> HsCon -> HsTy -> HsDec
@@ -186,7 +211,7 @@ decVal = HsDecPatBind
 decFun :: HsVar -> [HsPat] -> HsExp -> HsDec
 decFun = HsDecFunBind
 
-decTypeSig :: HsVar -> HsTy -> HsDec
+decTypeSig :: [HsVar] -> HsTy -> HsDec
 decTypeSig = HsDecTypeSig
 
 decInst :: HsTyCon -> [HsTy] -> [HsDec] -> HsDec

@@ -11,6 +11,7 @@ import Data.Char
 import Data.Function
 import HsSyn
 import Text.PrettyPrint
+import Numeric (showHex)
 
 pstr :: Ppr a => a -> String -> String
 pstr = (++) . render . ppr' LevelCtxUniv
@@ -138,6 +139,45 @@ instance Ppr HsExp where
   ppr (HsExpLam p e) =
     let pDoc = ppr' LevelCtxLamPat p; eDoc = ppr' LevelCtxLamBody e
     in (LevelLam, hang ("\\" <> pDoc <+> "->") tw eDoc)
+  ppr (HsExpTup es) =
+    let esDocs = map (ppr' LevelCtxElem) es
+    in (LevelAtom, pprTuple esDocs)
+  ppr (HsExpList es) =
+    let
+      esDocs = map (ppr' LevelCtxElem) es
+      esDoc = brackets . fsep . punctuate comma $ esDocs
+    in
+      (LevelAtom, esDoc)
+  ppr (HsExpEnumFromTo eFrom eTo) =
+    let
+      eFromDoc = ppr' LevelCtxElem eFrom
+      eToDoc = ppr' LevelCtxElem eTo
+      eeftDoc = brackets $ eFromDoc <+> ".." <+> eToDoc
+    in
+      (LevelAtom, eeftDoc)
+  ppr (HsExpInt h n) =
+    let
+      lvl = if n < 0 then LevelUniv else LevelAtom
+      hDoc = case h of
+        HsHashLit True -> "#"
+        HsHashLit False -> empty
+      nDoc = text (show n) <> hDoc
+    in
+      (lvl, nDoc)
+  ppr (HsExpStr (HsHashLit False) s) =
+    let sDoc = text (show s)
+    in (LevelAtom, sDoc)
+  ppr (HsExpStr (HsHashLit True) s) =
+    let
+      sDoc
+        | all isPrint s = text (show s)
+        | otherwise = text (showHexStr s)
+    in (LevelAtom, sDoc <> "#")
+
+showHexStr :: String -> String
+showHexStr s = '\"' : foldr (.) id (map showHexChar s) "\""
+  where
+    showHexChar c = ("\\x" ++) . showHex (ord c)
 
 pprTuple :: [Doc] -> Doc
 pprTuple = parens . hsep . punctuate comma
@@ -194,6 +234,8 @@ instance Ppr HsDec where
     in (LevelUniv, "{-#" <+> nameDoc <+> contentDoc <+> "#-}" )
   ppr (HsDecInlinePragma (HsVar v)) =
     ppr (HsDecPragma "INLINE" v)
+  ppr (HsDecNoInlinePragma (HsVar v)) =
+    ppr (HsDecPragma "NOINLINE" v)
   ppr (HsDecCppIfElse condS thenD elseD) =
     (LevelUniv, cppIfElseDoc)
     where
@@ -234,13 +276,18 @@ instance Ppr HsDec where
   ppr (HsDecPatBind p e) =
     let pDoc = ppr' LevelCtxPatBind p; eDoc = ppr' LevelCtxLamBody e
     in (LevelUniv, hang (pDoc <+> equals) tw eDoc)
-  ppr (HsDecFunBind v ps e) =
-    (LevelUniv, hang (headerDoc <+> equals) tw eDoc)
+  ppr (HsDecFunBind v ps e ds) =
+    (LevelUniv, if null ds then dfbDoc else dfbWhereDoc)
     where
       vDoc = ppr' LevelCtxNameBind v
       psDocs = map (ppr' LevelCtxLamPat) ps
       headerDoc = hsep (vDoc : psDocs)
       eDoc = ppr' LevelCtxLamBody e
+      dsDoc = ppr' LevelCtxUniv ds
+      dfbDoc = hang (headerDoc <+> equals) tw eDoc
+      dfbWhereDoc =
+        hang dfbDoc tw $
+        hang "where" tw dsDoc
   ppr (HsDecTypeSig vs t) =
     (LevelUniv, hang (headerDoc <+> "::") tw tDoc)
     where

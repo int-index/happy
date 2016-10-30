@@ -74,7 +74,7 @@ Produce the complete output file.
 >               -- don't screw up any OPTIONS pragmas in the header.
 >       . pstr produceAbsSynDecl . nl
 >       . pstr produceTypes . nl
->       . produceExpListPerState . nl
+>       . pstr produceExpListPerState . nl
 >       . produceActionTable target . nl
 >       . produceReductions . nl
 >       . produceTokenConverter . nl
@@ -553,24 +553,41 @@ machinery to discard states in the parser...
 >       . str "happy_n_terms = " . shows n_terminals . str " :: Int\n"
 >       . str "happy_n_nonterms = " . shows n_nonterminals . str " :: Int\n\n"
 >
->    produceExpListPerState
->       = produceExpListArray
->       . str "{-# NOINLINE happyExpListPerState #-}\n"
->       . str "happyExpListPerState st =\n"
->       . str "    token_strs_expected\n"
->       . str "  where token_strs = " . str (show $ elems token_names') . str "\n"
->       . str "        bit_start = st * " . str (show nr_tokens) . str "\n"
->       . str "        bit_end = (st + 1) * " . str (show nr_tokens) . str "\n"
->       . str "        read_bit = readArrayBit happyExpList\n"
->       . str "        bits = map read_bit [bit_start..bit_end - 1]\n"
->       . str "        bits_indexed = zip bits [0.."
->                                        . str (show (nr_tokens - 1)) . str "]\n"
->       . str "        token_strs_expected = concatMap f bits_indexed\n"
->       . str "        f (False, _) = []\n"
->       . str "        f (True, nr) = [token_strs !! nr]\n"
->       . str "\n"
->       where (first_token, last_token) = bounds token_names'
->             nr_tokens = last_token - first_token + 1
+>    produceExpListPerState =
+>      produceExpListArray ++ [
+>        decNoInlinePragma "happyExpListPerState",
+>        decFunWhere "happyExpListPerState" [var "st"]
+>          (var "token_strs_expected")
+>          [
+>            decFun "token_strs" [] $
+>              expList (map expStr (elems token_names')),
+>            decFun "bit_start" [] $
+>              var "*" % var "st" % expInt nr_tokens,
+>            decFun "bit_end" [] $
+>              var "*" % expPlusOne (var "st") % expInt nr_tokens,
+>            decFun "read_bit" [] $
+>              var "readArrayBit" % var "happyExpList",
+>            decFun "bits" [] $
+>              var "map" % var "read_bit" %
+>                expEnumFromTo
+>                  (var "bit_start")
+>                  (var "-" % var "bit_end" % expInt (1 :: Int)),
+>            decFun "bits_indexed" [] $
+>              var "zip" % var "bits" %
+>                expEnumFromTo
+>                  (expInt (0 :: Int))
+>                  (expInt (nr_tokens - 1)),
+>            decFun "token_strs_expected" [] $
+>              var "concatMap" % var "f" % var "bits_indexed",
+>            decFun "f" [patTup [con "False", patWild]] $ expList [],
+>            decFun "f" [patTup [con "True", var "nr"]] $
+>              expList [var "!!" % var "token_strs" % var "nr"]
+>          ]
+>        ]
+>       where
+>         (first_token, last_token) = bounds token_names'
+>         nr_tokens = last_token - first_token + 1
+>         expPlusOne e = var "+" % e % expInt (1 :: Int)
 >
 >    produceStateFunction goto' (state, acts)
 >       = foldr (.) id (map produceActions assocs_acts)
@@ -682,17 +699,19 @@ action array indexed by (terminal * last_state) + state
 >           . str "\n\t])\n\n"
 
 >    produceExpListArray
->       | ghc
->           = str "happyExpList :: HappyAddr\n"
->           . str "happyExpList = HappyA# \"" --"
->           . str (hexChars explist)
->           . str "\"#\n\n" --"
->       | otherwise
->           = str "happyExpList :: Happy_Data_Array.Array Int Int\n"
->           . str "happyExpList = Happy_Data_Array.listArray (0,"
->               . shows table_size . str ") (["
->           . interleave' "," (map shows explist)
->           . str "\n\t])\n\n"
+>       | ghc =
+>         [ decTypeSig ["happyExpList"] (tyCon "HappyAddr"),
+>           decFun "happyExpList" [] $
+>             con "HappyA#" % expHexChars explist ]
+>       | otherwise =
+>         [ decTypeSig ["happyExpList"] $
+>             qtyCon "Happy_Data_Array" "Array" %
+>               tyCon "Int" %
+>               tyCon "Int",
+>           decFun "happyExpList" [] $
+>             qcon "Happy_Data_Array" "listArray" %
+>               expTup [expInt (0 :: Int), expInt table_size] %
+>               expList (map expInt explist) ]
 
 >    (_, last_state) = bounds action
 >    n_states = last_state + 1
@@ -804,52 +823,52 @@ MonadStuff:
 
 
 >    produceMonadStuff = [
->          decTypeSig ["happyThen"] (
+>      decTypeSig ["happyThen"] (
+>        monad_context' `tyCtx`
+>        monad_tycon' % tyVar "a" `tyArr`
+>        (tyVar "a" `tyArr` monad_tycon' % tyVar "b") `tyArr`
+>        monad_tycon' % tyVar "b" ),
+>      decFun "happyThen" [] monad_then',
+>      decTypeSig ["happyReturn"] (
+>         monad_context' `tyCtx`
+>         tyVar "a" `tyArr`
+>         monad_tycon' % tyVar "a" ),
+>      decFun "happyReturn" [] monad_return' ] ++
+>      case lexer' of
+>        Nothing -> [
+>          decFun "happyThen1" [var "m", var "k", var "tks"] (
+>            monad_then' %
+>            var "m" %
+>            (var "a" `expLam` var "k" % var "a" % var "tks") ),
+>          decTypeSig ["happyReturn1"] (
 >            monad_context' `tyCtx`
->            monad_tycon' % tyVar "a" `tyArr`
->            (tyVar "a" `tyArr` monad_tycon' % tyVar "b") `tyArr`
->            monad_tycon' % tyVar "b" ),
->          decFun "happyThen" [] monad_then',
->          decTypeSig ["happyReturn"] (
->             monad_context' `tyCtx`
->             tyVar "a" `tyArr`
->             monad_tycon' % tyVar "a" ),
->          decFun "happyReturn" [] monad_return' ] ++
->          case lexer' of
->            Nothing -> [
->              decFun "happyThen1" [var "m", var "k", var "tks"] (
->                monad_then' %
->                var "m" %
->                (var "a" `expLam` var "k" % var "a" % var "tks") ),
->              decTypeSig ["happyReturn1"] (
->                monad_context' `tyCtx`
->                tyVar "a" `tyArr`
->                tyVar "b" `tyArr`
->                monad_tycon' % tyVar "a" ),
->              decFun "happyReturn1" []
->                (var "a" `expLam` var "tks" `expLam`
->                  monad_return' % var "a"),
->              decTypeSig ["happyError'"] (
->                monad_context' `tyCtx`
->                tyTup [tyList token', tyList (tyVar "String")] `tyArr`
->                monad_tycon' % tyVar "a" ),
->              decFun "happyError'" [] (
->                (if use_monad then id else (\x -> var "." % con "HappyIdentity" % x))
->                errorHandler ) ]
->            _ -> [
->              decFun "happyThen1" [] (var "happyThen"),
->              decTypeSig ["happyReturn1"] (
->                monad_context' `tyCtx`
->                tyVar "a" `tyArr`
->                monad_tycon' % tyVar "a" ),
->              decFun "happyReturn1" [] (var "happyReturn"),
->              decTypeSig ["happyError'"] (
->                monad_context' `tyCtx`
->                tyTup [token', tyList (tyVar "String")] `tyArr`
->                monad_tycon' % tyVar "a" ),
->              decFun "happyError'" [var "tk"] (
->                (if use_monad then id else (con "HappyIdentity" %))
->                (errorHandler % var "tk") ) ]
+>            tyVar "a" `tyArr`
+>            tyVar "b" `tyArr`
+>            monad_tycon' % tyVar "a" ),
+>          decFun "happyReturn1" []
+>            (var "a" `expLam` var "tks" `expLam`
+>              monad_return' % var "a"),
+>          decTypeSig ["happyError'"] (
+>            monad_context' `tyCtx`
+>            tyTup [tyList token', tyList (tyVar "String")] `tyArr`
+>            monad_tycon' % tyVar "a" ),
+>          decFun "happyError'" [] (
+>            (if use_monad then id else (\x -> var "." % con "HappyIdentity" % x))
+>            errorHandler ) ]
+>        _ -> [
+>          decFun "happyThen1" [] (var "happyThen"),
+>          decTypeSig ["happyReturn1"] (
+>            monad_context' `tyCtx`
+>            tyVar "a" `tyArr`
+>            monad_tycon' % tyVar "a" ),
+>          decFun "happyReturn1" [] (var "happyReturn"),
+>          decTypeSig ["happyError'"] (
+>            monad_context' `tyCtx`
+>            tyTup [token', tyList (tyVar "String")] `tyArr`
+>            monad_tycon' % tyVar "a" ),
+>          decFun "happyError'" [var "tk"] (
+>            (if use_monad then id else (con "HappyIdentity" %))
+>            (errorHandler % var "tk") ) ]
 
 An error handler specified with %error is passed the current token
 when used with %lexer, but happyError (the old way but kept for
@@ -1374,3 +1393,10 @@ slot is free or not.
 > hexDig :: Int -> Char
 > hexDig i | i <= 9    = chr (i + ord '0')
 >          | otherwise = chr (i - 10 + ord 'a')
+
+> expHexChars :: [Int] -> HsExp
+> expHexChars = expStrHash . concatMap hexChar'
+>   where
+>     hexChar' :: Int -> String
+>     hexChar' i | i < 0 = hexChar' (i + 65536)
+>     hexChar' i = map chr [i `mod` 256, i `div` 256]

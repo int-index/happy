@@ -133,6 +133,18 @@ pprCommentClosed (HsComment ls) = case ls of
   [] -> empty
   _  -> "{-" <+> vsep (map text ls) <+> "-}"
 
+
+pprIntHash :: HsHashLit -> Integer -> (Level, Doc)
+pprIntHash h n =
+  let
+    lvl = if n < 0 then LevelUniv else LevelAtom
+    hDoc = case h of
+      HsHashLit True -> "#"
+      HsHashLit False -> empty
+    nDoc = text (show n) <> hDoc
+  in
+    (lvl, nDoc)
+
 instance Ppr HsExp where
   ppr (HsExpUnsafeString s) = (LevelUniv, text s)
   ppr (HsExpVar v) = ppr v
@@ -159,15 +171,7 @@ instance Ppr HsExp where
       eeftDoc = brackets $ eFromDoc <+> ".." <+> eToDoc
     in
       (LevelAtom, eeftDoc)
-  ppr (HsExpInt h n) =
-    let
-      lvl = if n < 0 then LevelUniv else LevelAtom
-      hDoc = case h of
-        HsHashLit True -> "#"
-        HsHashLit False -> empty
-      nDoc = text (show n) <> hDoc
-    in
-      (lvl, nDoc)
+  ppr (HsExpInt h n) = pprIntHash h n
   ppr (HsExpStr (HsHashLit False) s) =
     let sDoc = text (show s)
     in (LevelAtom, sDoc)
@@ -224,6 +228,7 @@ instance Ppr HsPat where
   ppr (HsPatTup ps) =
     let psDocs = map (ppr' LevelCtxElem) ps
     in (LevelAtom, pprTuple psDocs)
+  ppr (HsPatInt h n) = pprIntHash h n
   ppr HsPatWild = (LevelAtom, "_")
 
 instance Ppr [HsDec] where

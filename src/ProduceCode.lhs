@@ -12,8 +12,7 @@ The code generator.
 > import Grammar
 > import Target                 ( Target(..) )
 > import GenUtils               ( mapDollarDollar, str, char, nl, strspace,
->                                 interleave, interleave',
->                                 brack, brack' )
+>                                 interleave, brack, brack' )
 > import HsSyn
 > import HsSynPpr
 
@@ -76,7 +75,7 @@ Produce the complete output file.
 >       produceAbsSynDecl ++
 >       produceTypes ++
 >       produceExpListPerState ++
->       [fromString $ produceActionTable target ""] ++ -- TODO
+>       produceActionTable target ++
 >       [fromString $ produceReductions ""] ++ -- TODO
 >       [fromString $ produceTokenConverter ""] ++ -- TODO
 >       produceIdentityStuff ++
@@ -86,7 +85,7 @@ Produce the complete output file.
 >       [fromString $ produceAttributes attributes' attributetype' ""] ++ -- TODO
 >       fmap fromString (maybeToList module_trailer)
 >  where
->    n_starts = length starts'
+>    n_starts = length starts' :: Int
 >    token' = fromString token_type' :: HsTy
 >    monad_then' = fromString monad_then :: HsExp
 >    monad_return' = fromString monad_return :: HsExp
@@ -134,18 +133,18 @@ If we're using coercions, we need to generate the injections etc.
 >         happy_item = tyApp (tyCon "HappyAbsSyn") all_tyvars'
 >
 >         inject n ty = [
->           decTypeSig [var (mkHappyIn' n)]
->             (tyVar (type_param n ty) `tyArr` happy_item),
->           decFun (var (mkHappyIn' n)) [var "x"]
->             (qvar "Happy_GHC_Exts" "unsafeCoerce#" % "x" :: HsExp),
->           decInlinePragma (mkHappyIn' n) ]
+>           decTypeSig [var (mkHappyIn n)] $
+>             tyVar (type_param n ty) `tyArr` happy_item,
+>           decFun (var (mkHappyIn n)) [var "x"] $
+>             qvar "Happy_GHC_Exts" "unsafeCoerce#" % "x",
+>           decInlinePragma (mkHappyIn n) ]
 >
 >         extract n ty = [
->           decTypeSig [var (mkHappyOut' n)]
->             (happy_item `tyArr` tyVar (type_param n ty)),
->           decFun (var (mkHappyOut' n)) [var "x"]
->             (qvar "Happy_GHC_Exts" "unsafeCoerce#" % "x" :: HsExp),
->           decInlinePragma (mkHappyOut' n) ]
+>           decTypeSig [var (mkHappyOut n)] $
+>             happy_item `tyArr` tyVar (type_param n ty),
+>           decFun (var (mkHappyOut n)) [var "x"] $
+>             qvar "Happy_GHC_Exts" "unsafeCoerce#" % "x",
+>           decInlinePragma (mkHappyOut n) ]
 >       in
 >         [ decNewtype "HappyAbsSyn" all_tyvars' -- see NOTE below
 >             (con "HappyAbsSyn") (tyCon "HappyAny"),
@@ -154,14 +153,16 @@ If we're using coercions, we need to generate the injections etc.
 >             (decType "HappyAny" [] ("a" `tyForall` tyVar "a")) ] ++
 >         concat [ inject n ty ++ extract n ty | (n,ty) <- assocs nt_types ] ++
 >          -- token injector
->         [ decTypeSig ["happyInTok"] (token' `tyArr` happy_item),
->           decFun "happyInTok" [var "x"]
->             (qvar "Happy_GHC_Exts" "unsafeCoerce#" % var "x"),
+>         [ decTypeSig ["happyInTok"] $
+>             token' `tyArr` happy_item,
+>           decFun "happyInTok" [var "x"] $
+>             qvar "Happy_GHC_Exts" "unsafeCoerce#" % var "x",
 >           decInlinePragma "happyInTok" ] ++
 >           -- token extractor
->         [ decTypeSig ["happyOutTok"] (happy_item `tyArr` token'),
->           decFun "happyOutTok" [var "x"]
->             (qvar "Happy_GHC_Exts" "unsafeCoerce#" % var "x"),
+>         [ decTypeSig ["happyOutTok"] $
+>             happy_item `tyArr` token',
+>           decFun "happyOutTok" [var "x"] $
+>             qvar "Happy_GHC_Exts" "unsafeCoerce#" % var "x",
 >           decInlinePragma "happyOutTok" ]
 
 NOTE: in the coerce case we always coerce all the semantic values to
@@ -188,7 +189,7 @@ example where this matters.
 >         absSynCons =
 >           [ ("HappyTerminal", [token']),
 >             ("HappyErrorToken", [tyCon "Int"]) ] ++
->           [ (makeAbsSynCon' n, [tyVar (type_param n ty)]) |
+>           [ (makeAbsSynCon n, [tyVar (type_param n ty)]) |
 >             (n, ty) <- assocs nt_types,
 >             (nt_types_index ! n) == n ]
 >       in
@@ -217,7 +218,7 @@ based parsers -- types aren't as important there).
 >       let
 >         actionNames = do
 >           (i,_action') <- zip [ 0 :: Int .. ] (assocs action)
->           [mkActionName' i]
+>           [mkActionName i]
 >         actionNameType =
 >           monad_context' `tyCtx`
 >           intMaybeHash `tyArr`
@@ -225,7 +226,7 @@ based parsers -- types aren't as important there).
 >         reduceFuns = do
 >           (i,_action) <-
 >             zip [ n_starts :: Int .. ] (drop n_starts prods)
->           [mkReduceFun' i]
+>           [mkReduceFun i]
 >         reduceFunType =
 >           monad_context' `tyCtx` happyReductionValue
 >       in
@@ -347,7 +348,7 @@ happyMonadReduce to get polymorphic recursion.  Sigh.
 >                           | otherwise                  = nt
 >
 >               mkReductionHdr lt' s =
->                       mkReduceFun i . str " = "
+>                       pstr (mkReduceFun i) . str " = "
 >                       . str s . strspace . lt' . strspace . showInt adjusted_nt
 >                       . strspace . reductionFun . nl
 >                       . reductionFun . strspace
@@ -355,16 +356,14 @@ happyMonadReduce to get polymorphic recursion.  Sigh.
 >               reductionFun = str "happyReduction_" . shows i
 >
 >               tokPatterns
->                | coerce = reverse (map mkDummyVar [1 .. length toks])
+>                | coerce = reverse (map (\a -> pstr $ mkDummyVar a) [1 .. length toks])
 >                | otherwise = reverse (zipWith tokPattern [1..] toks)
 >
 >               tokPattern n _ | n `notElem` vars_used = char '_'
 >               tokPattern n t | t >= firstStartTok && t < fst_term
 >                       = if coerce
->                               then mkHappyVar n
->                               else brack' (
->                                    pstr (makeAbsSynCon' t) . str "  " . mkHappyVar n
->                                    )
+>                               then pstr (mkHappyVar n)
+>                               else brack' (pstr (patCon (makeAbsSynCon t) [var (mkHappyVar n)]))
 >               tokPattern n t
 >                       = if coerce
 >                               then mkHappyTerminalVar n t
@@ -378,22 +377,22 @@ happyMonadReduce to get polymorphic recursion.  Sigh.
 >                       . code'' . str (take (length cases) (repeat '}'))
 >                  | otherwise = code''
 >
->               cases = [ str "case " . pstr (extract t) . strspace . mkDummyVar n
+>               cases = [ str "case " . pstr (var (extract t) % var (mkDummyVar n) :: HsExp)
 >                       . str " of { " . tokPattern n t . str " -> "
 >                       | (n,t) <- zip [1..] toks,
 >                         n `elem` vars_used ]
 >
 >               extract t =
 >                 if t >= firstStartTok && t < fst_term
->                   then mkHappyOut' t
+>                   then mkHappyOut t
 >                   else var "happyOutTok"
 >
 >               lt = length toks
 
 >               this_absSynCon :: HsExp
 >               this_absSynCon
->                 | coerce    = var (mkHappyIn' nt)
->                 | otherwise = con (makeAbsSynCon' nt)
+>                 | coerce    = var (mkHappyIn nt)
+>                 | otherwise = con (makeAbsSynCon nt)
 
 %-----------------------------------------------------------------------------
 The token conversion function.
@@ -488,7 +487,7 @@ the left hand side of '@'.
 >         tok_str_fn = case lookup t token_rep of
 >                     Nothing -> Nothing
 >                     Just str' -> mapDollarDollar str'
->         pat = mkHappyVar i
+>         pat = pstr (mkHappyVar i)
 
 >    tokIndex
 >       = case target of
@@ -544,14 +543,15 @@ straight back to a state where the error token can be shifted, or if
 none exists, we'll get a parse error.  In theory, we won't need the
 machinery to discard states in the parser...
 
->    produceActionTable TargetHaskell
->       = foldr (.) id (map (produceStateFunction goto) (assocs action))
+>    produceActionTable TargetHaskell =
+>      concatMap (produceStateFunction goto) (assocs action)
 >
->    produceActionTable TargetArrayBased
->       = produceActionArray
->       . produceReduceArray
->       . str "happy_n_terms = " . shows n_terminals . str " :: Int\n"
->       . str "happy_n_nonterms = " . shows n_nonterminals . str " :: Int\n\n"
+>    produceActionTable TargetArrayBased =
+>      produceActionArray ++
+>      [produceReduceArray] ++ [
+>        decTypeSig ["happy_n_terms", "happy_n_nonterms"] (tyCon "Int"),
+>        decFun "happy_n_terms" [] $ expInt n_terminals,
+>        decFun "happy_n_nonterms" [] $ expInt n_nonterminals ]
 >
 >    produceExpListPerState =
 >      produceExpListArray ++ [
@@ -589,129 +589,73 @@ machinery to discard states in the parser...
 >         nr_tokens = last_token - first_token + 1
 >         expPlusOne e = var "+" % e % expInt (1 :: Int)
 >
->    produceStateFunction goto' (state, acts)
->       = foldr (.) id (map produceActions assocs_acts)
->       . foldr (.) id (map produceGotos   (assocs gotos))
->       . mkActionName state
->       . (if ghc
->              then str " x = happyTcHack x "
->              else str " _ = ")
->       . mkAction default_act
->       . (case default_act of
->            LR'Fail -> callHappyExpListPerState
->            LR'MustFail -> callHappyExpListPerState
->            _ -> str "")
->       . str "\n\n"
+>    produceStateFunction goto' (state, acts) =
+>      concatMap produceActions assocs_acts ++
+>      concatMap produceGotos (assocs gotos) ++
+>      [produceDefaultAction]
 >
->       where gotos = goto' ! state
+>       where
+>         gotos = goto' ! state
 >
->             callHappyExpListPerState = str " (happyExpListPerState "
->                                      . str (show state) . str ")"
+>         callHappyExpListPerState =
+>           var "happyExpListPerState" % expInt state
 >
->             produceActions (_, LR'Fail{-'-}) = id
->             produceActions (t, action'@(LR'Reduce{-'-} _ _))
->                | action' == default_act = id
->                | otherwise = producePossiblyFailingAction t action'
->             produceActions (t, action')
->               = producePossiblyFailingAction t action'
+>         produceActions (_, LR'Fail{-'-}) = []
+>         produceActions (t, action'@(LR'Reduce{-'-} _ _))
+>            | action' == default_act = []
+>            | otherwise = [producePossiblyFailingAction t action']
+>         produceActions (t, action') =
+>           [producePossiblyFailingAction t action']
 >
->             producePossiblyFailingAction t action'
->               = actionFunction t
->               . mkAction action'
->               . (case action' of
->                   LR'Fail -> str " []"
->                   LR'MustFail -> str " []"
->                   _ -> str "")
->               . str "\n"
+>         producePossiblyFailingAction t action' =
+>           actionFunction t $ mkAction action' (expList [])
 >
->             produceGotos (t, Goto i)
->               = actionFunction t
->               . str "happyGoto " . mkActionName i . str "\n"
->             produceGotos (_, NoGoto) = id
+>         produceGotos (_, NoGoto) = []
+>         produceGotos (t, Goto i) = [
+>           actionFunction t $
+>             var "happyGoto" % var (mkActionName i) ]
 >
->             actionFunction t
->               = mkActionName state . strspace
->               . ('(' :) . showInt t
->               . str ") = "
+>         actionFunction t =
+>           decFun (mkActionName state) [expPatHash' t]
 >
->             default_act = getDefault assocs_acts
+>         produceDefaultAction
+>           | ghc =
+>               decFun (mkActionName state) [var "x"] $
+>                 var "happyTcHack" % var "x" %
+>                   mkAction default_act callHappyExpListPerState
+>           | otherwise =
+>               decFun (mkActionName state) [patWild] $
+>                 mkAction default_act callHappyExpListPerState
 >
->             assocs_acts = assocs acts
+>         default_act = getDefault assocs_acts
+>
+>         assocs_acts = assocs acts
 
 action array indexed by (terminal * last_state) + state
 
->    produceActionArray
->       | ghc
->           = str "happyActOffsets :: HappyAddr\n"
->           . str "happyActOffsets = HappyA# \"" --"
->           . str (hexChars act_offs)
->           . str "\"#\n\n" --"
+>    produceConstArray name upper_bound values
+>      | ghc =
+>        [ decTypeSig [name] (tyCon "HappyAddr"),
+>          decFun name [] $ con "HappyA#" % expHexChars values ]
+>      | otherwise =
+>        [ decTypeSig [name] $
+>            qtyCon "Happy_Data_Array" "Array" %
+>              tyCon "Int" %
+>              tyCon "Int",
+>          decFun name [] $
+>            qcon "Happy_Data_Array" "listArray" %
+>              expTup [expInt (0 :: Int), expInt upper_bound] %
+>              expList (map expInt values) ]
 >
->           . str "happyGotoOffsets :: HappyAddr\n"
->           . str "happyGotoOffsets = HappyA# \"" --"
->           . str (hexChars goto_offs)
->           . str "\"#\n\n"  --"
->
->           . str "happyDefActions :: HappyAddr\n"
->           . str "happyDefActions = HappyA# \"" --"
->           . str (hexChars defaults)
->           . str "\"#\n\n" --"
->
->           . str "happyCheck :: HappyAddr\n"
->           . str "happyCheck = HappyA# \"" --"
->           . str (hexChars check)
->           . str "\"#\n\n" --"
->
->           . str "happyTable :: HappyAddr\n"
->           . str "happyTable = HappyA# \"" --"
->           . str (hexChars table)
->           . str "\"#\n\n" --"
+>    produceActionArray =
+>      produceConstArray "happyActOffsets" n_states act_offs ++
+>      produceConstArray "happyGotoOffsets" n_states goto_offs ++
+>      produceConstArray "happyDefActions" n_states defaults ++
+>      produceConstArray "happyCheck" table_size check ++
+>      produceConstArray "happyTable" table_size table
 
->       | otherwise
->           = str "happyActOffsets :: Happy_Data_Array.Array Int Int\n"
->           . str "happyActOffsets = Happy_Data_Array.listArray (0,"
->               . shows (n_states) . str ") (["
->           . interleave' "," (map shows act_offs)
->           . str "\n\t])\n\n"
->
->           . str "happyGotoOffsets :: Happy_Data_Array.Array Int Int\n"
->           . str "happyGotoOffsets = Happy_Data_Array.listArray (0,"
->               . shows (n_states) . str ") (["
->           . interleave' "," (map shows goto_offs)
->           . str "\n\t])\n\n"
->
->           . str "happyDefActions :: Happy_Data_Array.Array Int Int\n"
->           . str "happyDefActions = Happy_Data_Array.listArray (0,"
->               . shows (n_states) . str ") (["
->           . interleave' "," (map shows defaults)
->           . str "\n\t])\n\n"
->
->           . str "happyCheck :: Happy_Data_Array.Array Int Int\n"
->           . str "happyCheck = Happy_Data_Array.listArray (0,"
->               . shows table_size . str ") (["
->           . interleave' "," (map shows check)
->           . str "\n\t])\n\n"
->
->           . str "happyTable :: Happy_Data_Array.Array Int Int\n"
->           . str "happyTable = Happy_Data_Array.listArray (0,"
->               . shows table_size . str ") (["
->           . interleave' "," (map shows table)
->           . str "\n\t])\n\n"
-
->    produceExpListArray
->       | ghc =
->         [ decTypeSig ["happyExpList"] (tyCon "HappyAddr"),
->           decFun "happyExpList" [] $
->             con "HappyA#" % expHexChars explist ]
->       | otherwise =
->         [ decTypeSig ["happyExpList"] $
->             qtyCon "Happy_Data_Array" "Array" %
->               tyCon "Int" %
->               tyCon "Int",
->           decFun "happyExpList" [] $
->             qcon "Happy_Data_Array" "listArray" %
->               expTup [expInt (0 :: Int), expInt table_size] %
->               expList (map expInt explist) ]
+>    produceExpListArray =
+>      produceConstArray "happyExpList" table_size explist
 
 >    (_, last_state) = bounds action
 >    n_states = last_state + 1
@@ -724,20 +668,26 @@ action array indexed by (terminal * last_state) + state
 >
 >    table_size = length table - 1
 >
->    produceReduceArray
->       = {- str "happyReduceArr :: Array Int a\n" -}
->         str "happyReduceArr = Happy_Data_Array.array ("
->               . shows (n_starts :: Int) -- omit the %start reductions
->               . str ", "
->               . shows n_rules
->               . str ") [\n"
->       . interleave' ",\n" (map reduceArrElem [n_starts..n_rules])
->       . str "\n\t]\n\n"
+>    produceReduceArray =
+>      decFun "happyReduceArr" [] $
+>        qvar "Happy_Data_Array" "array" %
+>          expTup [
+>            -- omit the %start reductions
+>            expInt n_starts,
+>            expInt n_rules ] %
+>          expList (map reduceArrElem [n_starts..n_rules])
 
 >    n_rules = length prods - 1 :: Int
 
->    showInt i | ghc       = shows i . showChar '#'
->              | otherwise = shows i
+>    showInt i = pstr (expIntHash' i)
+>
+>    expIntHash'
+>      | ghc       = expIntHash
+>      | otherwise = expInt
+>
+>    expPatHash'
+>      | ghc       = patIntHash
+>      | otherwise = patInt
 
 This lets examples like:
 
@@ -770,7 +720,7 @@ outlaw them inside { }
 >                         Nothing -> error ("cant find an item in list")
 >       assoc_list = [ (b,a) | (a, Just b) <- assocs nt_types ]
 
->    makeAbsSynCon' = mkAbsSynCon' nt_types_index
+>    makeAbsSynCon = mkAbsSynCon nt_types_index
 
 
 >    produceIdentityStuff | use_monad = []
@@ -889,9 +839,7 @@ directive determins the API of the provided function.
 >            expLam (patTup [var "tokens", var "explist"]) $
 >              var "happyError"
 
->    reduceArrElem n
->      = str "\t(" . shows n . str " , "
->      . str "happyReduce_" . shows n . char ')'
+>    reduceArrElem n = expTup [expInt n, var (mkReduceFun n)]
 
 -----------------------------------------------------------------------------
 -- Produce the parser entry and exit points
@@ -1000,19 +948,17 @@ vars used in this piece of code.
 > actionVal LR'Fail             = 0
 > actionVal LR'MustFail         = 0
 
-> mkAction :: LRAction -> String -> String
-> mkAction (LR'Shift i _)       = str "happyShift " . mkActionName i
-> mkAction LR'Accept            = str "happyAccept"
-> mkAction LR'Fail              = str "happyFail"
-> mkAction LR'MustFail          = str "happyFail"
-> mkAction (LR'Reduce i _)      = str "happyReduce_" . shows i
-> mkAction (LR'Multiple _ a)    = mkAction a
+> mkAction :: LRAction -> HsExp -> HsExp
+> mkAction act failArg = case act of
+>   (LR'Shift i _)    -> var "happyShift" % var (mkActionName i)
+>   LR'Accept         -> var "happyAccept"
+>   LR'Fail           -> var "happyFail" % failArg
+>   LR'MustFail       -> var "happyFail" % failArg
+>   (LR'Reduce i _)   -> var (mkReduceFun i)
+>   (LR'Multiple _ a) -> mkAction a failArg
 
-> mkActionName :: Int -> String -> String
-> mkActionName i                = str "action_" . shows i
-
-> mkActionName' :: Int -> HsVar
-> mkActionName' i = fromString ("action_" ++ show i)
+> mkActionName :: Int -> HsVar
+> mkActionName i = fromString ("action_" ++ show i)
 
 See notes under "Action Tables" above for some subtleties in this function.
 
@@ -1348,22 +1294,17 @@ slot is free or not.
 > happyComment = decComment $
 >   "parser produced by Happy Version " ++ showVersion version
 
-> mkAbsSynCon' :: Array Int Int -> Int -> HsCon
-> mkAbsSynCon' fx t = fromString $ "HappyAbsSyn" ++ show (fx ! t)
+> mkAbsSynCon :: Array Int Int -> Int -> HsCon
+> mkAbsSynCon fx t = fromString $ "HappyAbsSyn" ++ show (fx ! t)
 
-> mkHappyVar, mkReduceFun, mkDummyVar :: Int -> String -> String
-> mkHappyVar n = pstr (mkHappyVar' n)
-> mkReduceFun n = pstr (mkReduceFun' n)
-> mkDummyVar n = pstr (mkDummyVar' n)
+> mkHappyVar, mkReduceFun, mkDummyVar :: Int -> HsVar
+> mkHappyVar n = fromString ("happy_var_" ++ show n)
+> mkReduceFun n = fromString ("happyReduce_" ++ show n)
+> mkDummyVar n = fromString ("happy_x_" ++ show n)
 
-> mkHappyVar', mkReduceFun', mkDummyVar' :: Int -> HsVar
-> mkHappyVar' n = fromString ("happy_var_" ++ show n)
-> mkReduceFun' n = fromString ("happyReduce_" ++ show n)
-> mkDummyVar' n = fromString ("happy_x_" ++ show n)
-
-> mkHappyIn', mkHappyOut' :: Int -> HsVar
-> mkHappyIn' n = fromString ("happyIn" ++ show n)
-> mkHappyOut' n = fromString ("happyOut" ++ show n)
+> mkHappyIn, mkHappyOut :: Int -> HsVar
+> mkHappyIn n = fromString ("happyIn" ++ show n)
+> mkHappyOut n = fromString ("happyOut" ++ show n)
 
 > type_param :: Int -> Maybe String -> HsTyVar
 > type_param n Nothing = fromString ('t' : show n)
@@ -1375,20 +1316,6 @@ slot is free or not.
 -----------------------------------------------------------------------------
 -- Convert an integer to a 16-bit number encoded in \xNN\xNN format suitable
 -- for placing in a string.
-
-> hexChars :: [Int] -> String
-> hexChars acts = concat (map hexChar acts)
-
-> hexChar :: Int -> String
-> hexChar i | i < 0 = hexChar (i + 65536)
-> hexChar i =  toHex (i `mod` 256) ++ toHex (i `div` 256)
-
-> toHex :: Int -> String
-> toHex i = ['\\','x', hexDig (i `div` 16), hexDig (i `mod` 16)]
-
-> hexDig :: Int -> Char
-> hexDig i | i <= 9    = chr (i + ord '0')
->          | otherwise = chr (i - 10 + ord 'a')
 
 > expHexChars :: [Int] -> HsExp
 > expHexChars = expStrHash . concatMap hexChar'

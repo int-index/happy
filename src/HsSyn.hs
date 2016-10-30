@@ -30,6 +30,8 @@ module HsSyn
   , HsPat(..)
   , patCon
   , patTup
+  , patInt
+  , patIntHash
   , patWild
   , HsDec(..)
   , decComment
@@ -194,6 +196,7 @@ data HsPat =
   HsPatVar HsVar |
   HsPatCon HsCon [HsPat] |
   HsPatTup [HsPat] |
+  HsPatInt HsHashLit Integer |
   HsPatWild
 
 patCon :: HsCon -> [HsPat] -> HsPat
@@ -201,6 +204,12 @@ patCon = HsPatCon
 
 patTup :: [HsPat] -> HsPat
 patTup = HsPatTup
+
+patInt :: Integral n => n -> HsPat
+patInt = HsPatInt (HsHashLit False) . toInteger
+
+patIntHash :: Integral n => n -> HsPat
+patIntHash = HsPatInt (HsHashLit True) . toInteger
 
 patWild :: HsPat
 patWild = HsPatWild

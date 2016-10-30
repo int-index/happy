@@ -264,7 +264,7 @@ and generate the code.
 >       in
 
 >       (if outfilename == "-" then putStr else writeFile outfilename)
->               (magic_filter (outfile ++ templ))
+>               (magic_filter (outfile ++ '\n' : templ))
 
 Successfully Finished.
 

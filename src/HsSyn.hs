@@ -206,6 +206,7 @@ patWild :: HsPat
 patWild = HsPatWild
 
 data HsDec =
+  HsDecUnsafeString String |
   HsDecComment HsComment |
   HsDecPragma String String |
   HsDecInlinePragma HsVar |
@@ -218,6 +219,9 @@ data HsDec =
   HsDecFunBind HsVar [HsPat] HsExp [HsDec] |
   HsDecTypeSig [HsVar] HsTy |
   HsDecInst HsTyCon [HsTy] [HsDec]
+
+instance IsString HsDec where
+  fromString = HsDecUnsafeString
 
 decComment :: String -> HsDec
 decComment = HsDecComment . fromString

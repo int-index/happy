@@ -12,12 +12,12 @@ The code generator.
 > import Grammar
 > import Target                 ( Target(..) )
 > import GenUtils               ( mapDollarDollar, str, char, nl, strspace,
->                                 interleave, interleave', maybestr,
+>                                 interleave, interleave',
 >                                 brack, brack' )
 > import HsSyn
 > import HsSynPpr
 
-> import Data.Maybe                     ( isJust, isNothing )
+> import Data.Maybe
 > import Data.Char
 > import Data.String
 > import Data.List
@@ -67,24 +67,24 @@ Produce the complete output file.
 >               })
 >               action goto top_options module_header module_trailer
 >               target coerce ghc strict
->     = ( pstr top_opts . nl
->       . maybestr module_header . nl
->       . pstr happyComment . nl
->               -- comment goes *after* the module header, so that we
->               -- don't screw up any OPTIONS pragmas in the header.
->       . pstr produceAbsSynDecl . nl
->       . pstr produceTypes . nl
->       . pstr produceExpListPerState . nl
->       . produceActionTable target . nl
->       . produceReductions . nl
->       . produceTokenConverter . nl
->       . pstr produceIdentityStuff . nl
->       . pstr produceMonadStuff . nl
->       . produceEntries . nl
->       . produceStrict strict . nl
->       . produceAttributes attributes' attributetype' . nl
->       . maybestr module_trailer . nl
->       ) ""
+>     = prettyPrint $
+>       top_opts ++
+>       fmap fromString (maybeToList module_header) ++
+>       -- comment goes *after* the module header, so that we
+>       -- don't screw up any OPTIONS pragmas in the header.
+>       [happyComment] ++
+>       produceAbsSynDecl ++
+>       produceTypes ++
+>       produceExpListPerState ++
+>       [fromString $ produceActionTable target ""] ++ -- TODO
+>       [fromString $ produceReductions ""] ++ -- TODO
+>       [fromString $ produceTokenConverter ""] ++ -- TODO
+>       produceIdentityStuff ++
+>       produceMonadStuff ++
+>       [fromString $ produceEntries ""] ++ -- TODO
+>       [produceStrict strict] ++
+>       [fromString $ produceAttributes attributes' attributetype' ""] ++ -- TODO
+>       fmap fromString (maybeToList module_trailer)
 >  where
 >    n_starts = length starts'
 >    token' = fromString token_type' :: HsTy
@@ -252,10 +252,10 @@ based parsers -- types aren't as important there).
 >             "/type M a = .../, then /(HappyReduction M)/",
 >             "is not allowed.  But Happy is a",
 >             "code-generator that can just substitute it.\n",
->             pstr (decType "HappyReduction" ["m"] $ happyReduction (tyVar "m")) "" ]
+>             prettyPrint (decType "HappyReduction" ["m"] $ happyReduction (tyVar "m")) ]
 >         happyReductionValue =
 >           tyCommentBefore
->             (pstr (tyCon "HappyReduction" % monad_tycon') " =")
+>             (prettyPrint (tyCon "HappyReduction" % monad_tycon') ++ " =")
 >             (happyReduction monad_tycon')
 >         happyReduction m =
 >           intMaybeHash `tyArr` token' `tyArr` hstate `tyArr`
@@ -363,7 +363,7 @@ happyMonadReduce to get polymorphic recursion.  Sigh.
 >                       = if coerce
 >                               then mkHappyVar n
 >                               else brack' (
->                                    makeAbsSynCon t . str "  " . mkHappyVar n
+>                                    pstr (makeAbsSynCon' t) . str "  " . mkHappyVar n
 >                                    )
 >               tokPattern n t
 >                       = if coerce
@@ -770,7 +770,6 @@ outlaw them inside { }
 >                         Nothing -> error ("cant find an item in list")
 >       assoc_list = [ (b,a) | (a, Just b) <- assocs nt_types ]
 
->    makeAbsSynCon = mkAbsSynCon nt_types_index
 >    makeAbsSynCon' = mkAbsSynCon' nt_types_index
 
 
@@ -984,10 +983,10 @@ directive determins the API of the provided function.
 -----------------------------------------------------------------------------
 -- Strict or non-strict parser
 
-> produceStrict :: Bool -> String -> String
-> produceStrict strict
->       | strict    = str "happySeq = happyDoSeq\n\n"
->       | otherwise = str "happySeq = happyDontSeq\n\n"
+> produceStrict :: Bool -> HsDec
+> produceStrict strict =
+>   decFun "happySeq" [] $
+>     if strict then var "happyDoSeq" else var "happyDontSeq"
 
 -----------------------------------------------------------------------------
 Replace all the $n variables with happy_vars, and return a list of all the
@@ -1348,9 +1347,6 @@ slot is free or not.
 > happyComment :: HsDec
 > happyComment = decComment $
 >   "parser produced by Happy Version " ++ showVersion version
-
-> mkAbsSynCon :: Array Int Int -> Int -> String -> String
-> mkAbsSynCon fx t = pstr (mkAbsSynCon' fx t)
 
 > mkAbsSynCon' :: Array Int Int -> Int -> HsCon
 > mkAbsSynCon' fx t = fromString $ "HappyAbsSyn" ++ show (fx ! t)

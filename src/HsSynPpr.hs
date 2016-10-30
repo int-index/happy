@@ -5,6 +5,7 @@ module HsSynPpr
   ( Ppr(..)
   , Level(..)
   , pstr
+  , prettyPrint
   ) where
 
 import Data.Char
@@ -14,7 +15,10 @@ import Text.PrettyPrint
 import Numeric (showHex)
 
 pstr :: Ppr a => a -> String -> String
-pstr = (++) . render . ppr' LevelCtxUniv
+pstr = (++) . prettyPrint
+
+prettyPrint :: Ppr a => a -> String
+prettyPrint = render . ppr' LevelCtxUniv
 
 vsep :: [Doc] -> Doc
 vsep = foldr ($+$) empty
@@ -228,6 +232,7 @@ instance Ppr [HsDec] where
     in (LevelUniv, vsep dsDocs)
 
 instance Ppr HsDec where
+  ppr (HsDecUnsafeString s) = (LevelUniv, text s)
   ppr (HsDecComment com) = pprCommentOpen com
   ppr (HsDecPragma name content) =
     let nameDoc = text (map toUpper name); contentDoc = text content

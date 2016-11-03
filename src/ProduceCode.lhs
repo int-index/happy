@@ -5,14 +5,15 @@ The code generator.
 -----------------------------------------------------------------------------
 
 > {-# LANGUAGE OverloadedStrings #-}
+> {-# LANGUAGE PatternGuards #-}
 > module ProduceCode (produceParser) where
 
 > import Paths_happy            ( version )
 > import Data.Version           ( showVersion )
 > import Grammar
 > import Target                 ( Target(..) )
-> import GenUtils               ( mapDollarDollar, str, char, nl, strspace,
->                                 interleave, brack, brack' )
+> import GenUtils               ( mapDollarDollar, str, nl, strspace,
+>                                 interleave, brack' )
 > import HsSyn
 > import HsSynPpr
 
@@ -20,8 +21,9 @@ The code generator.
 > import Data.Char
 > import Data.String
 > import Data.List
+> import Data.Monoid
 
-> import Control.Monad      ( forM_ )
+> import Control.Monad      ( forM_, guard )
 > import Control.Monad.ST
 > import Data.Bits          ( setBit )
 > import Data.Array.ST      ( STUArray )
@@ -76,7 +78,7 @@ Produce the complete output file.
 >       produceTypes ++
 >       produceExpListPerState ++
 >       produceActionTable target ++
->       [fromString $ produceReductions ""] ++ -- TODO
+>       produceReductions ++
 >       [fromString $ produceTokenConverter ""] ++ -- TODO
 >       produceIdentityStuff ++
 >       produceMonadStuff ++
@@ -294,105 +296,110 @@ result type of the monadic action, and since in array-based parsers
 the whole thing is one recursive group, we'd need a type signature on
 happyMonadReduce to get polymorphic recursion.  Sigh.
 
->    produceReductions =
->       interleave "\n\n"
->          (zipWith produceReduction (drop n_starts prods) [ n_starts .. ])
+>    produceReductions = concat $
+>      zipWith produceReduction
+>        (drop n_starts prods) [ n_starts .. ]
 
 >    produceReduction (nt, toks, (code,vars_used), _) i
 
->     | is_monad_prod && (use_monad || imported_identity')
->       = mkReductionHdr (showInt lt) monad_reduce
->       . char '(' . interleave " `HappyStk`\n\t" tokPatterns
->       . str "happyRest) tk\n\t = happyThen ("
->       . str "("
->       . tokLets (char '(' . str code' . char ')')
->       . str ")"
->       . (if monad_pass_token then str " tk" else id)
->       . str "\n\t) (\\r -> happyReturn (" . pstr this_absSynCon . str " r))"
+>     | use_monad || imported_identity',
+>       Just monad_reduce <- m_monad_reduce =
+>       [ reduceFunImpl (var monad_reduce % expIntHash' lt),
+>         decFun reductionFun
+>           [patInterHappyStk tokPatterns, var "tk"] $
+>           (var "happyThen" %
+>              -- FIXME: this part is untested. No tests make
+>              -- monad_pass_token=True
+>              (if monad_pass_token
+>                then (% var "tk")
+>                else id) (tokLets code')) %
+>           (expLam (var "r") $
+>             var "happyReturn" % (this_absSynCon % var "r")) ]
 
->     | specReduceFun lt
->       = mkReductionHdr id ("happySpecReduce_" ++ show lt)
->       . interleave "\n\t" tokPatterns
->       . str " =  "
->       . tokLets (
->           pstr this_absSynCon . str "\n\t\t "
->           . char '(' . str code' . str "\n\t)"
->         )
->       . (if coerce || null toks || null vars_used then
->                 id
->          else
->                 nl . reductionFun . strspace
->               . interleave " " (map str (take (length toks) (repeat "_")))
->               . str " = notHappyAtAll ")
+>     | specReduceFun lt =
+>       [ reduceFunImpl (var (mkSpecReduceFun lt)),
+>         decFun reductionFun tokPatterns $
+>           tokLets (this_absSynCon % code')
+>       ] ++
+>       if coerce || null toks || null vars_used
+>         then []
+>         else [
+>           decFun reductionFun (replicate (length toks) patWild) $
+>             var "notHappyAtAll" ]
 
->     | otherwise
->       = mkReductionHdr (showInt lt) "happyReduce"
->       . char '(' . interleave " `HappyStk`\n\t" tokPatterns
->       . str "happyRest)\n\t = "
->       . tokLets
->          ( pstr this_absSynCon . str "\n\t\t "
->          . char '(' . str code'. str "\n\t) `HappyStk` happyRest"
->          )
+>     | otherwise =
+>       [ reduceFunImpl (var "happyReduce" % expIntHash' lt),
+>         decFun reductionFun [patInterHappyStk tokPatterns] $
+>           tokLets $
+>             con "HappyStk" %
+>             (this_absSynCon % code') %
+>             var "happyRest" ]
 
 >       where
->               (code', is_monad_prod, monad_pass_token, monad_reduce)
->                     = case code of
->                         '%':'%':code1 -> (code1, True, True, "happyMonad2Reduce")
->                         '%':'^':code1 -> (code1, True, True, "happyMonadReduce")
->                         '%':code1     -> (code1, True, False, "happyMonadReduce")
->                         _ -> (code, False, False, "")
+>         code' :: HsExp
+>         (code', monad_pass_token, m_monad_reduce) =
+>           case code of
+>             '%':'%':code1 -> (fromString code1, True, Just "happyMonad2Reduce")
+>             '%':'^':code1 -> (fromString code1, True, Just "happyMonadReduce")
+>             '%':code1     -> (fromString code1, False, Just "happyMonadReduce")
+>             _ -> (fromString code, False, Nothing)
 
->               -- adjust the nonterminal number for the array-based parser
->               -- so that nonterminals start at zero.
->               adjusted_nt | target == TargetArrayBased = nt - first_nonterm'
->                           | otherwise                  = nt
+>         -- adjust the nonterminal number for the array-based parser
+>         -- so that nonterminals start at zero.
+>         adjusted_nt
+>           | target == TargetArrayBased = nt - first_nonterm'
+>           | otherwise                  = nt
 >
->               mkReductionHdr lt' s =
->                       pstr (mkReduceFun i) . str " = "
->                       . str s . strspace . lt' . strspace . showInt adjusted_nt
->                       . strspace . reductionFun . nl
->                       . reductionFun . strspace
+>         reduceFunImpl s =
+>           decFun (mkReduceFun i) [] $
+>             s % expIntHash' adjusted_nt % var reductionFun
 >
->               reductionFun = str "happyReduction_" . shows i
+>         reductionFun :: HsVar
+>         reductionFun = fromString ("happyReduction_" ++ show i)
 >
->               tokPatterns
->                | coerce = reverse (map (\a -> pstr $ mkDummyVar a) [1 .. length toks])
->                | otherwise = reverse (zipWith tokPattern [1..] toks)
+>         patInterHappyStk :: [HsPat] -> HsPat
+>         patInterHappyStk =
+>           foldr (\p ps -> patCon "HappyStk" [p, ps])
+>             (var "happyRest")
 >
->               tokPattern n _ | n `notElem` vars_used = char '_'
->               tokPattern n t | t >= firstStartTok && t < fst_term
->                       = if coerce
->                               then pstr (mkHappyVar n)
->                               else brack' (pstr (patCon (makeAbsSynCon t) [var (mkHappyVar n)]))
->               tokPattern n t
->                       = if coerce
->                               then mkHappyTerminalVar n t
->                               else str "(HappyTerminal "
->                                  . mkHappyTerminalVar n t
->                                  . char ')'
+>         tokPatterns
+>          | coerce = reverse (map (var . mkDummyVar) [1 .. length toks])
+>          | otherwise = reverse (zipWith tokPattern [1..] toks)
 >
->               tokLets code''
->                  | coerce && not (null cases)
->                       = interleave "\n\t" cases
->                       . code'' . str (take (length cases) (repeat '}'))
->                  | otherwise = code''
+>         tokPattern n _ | n `notElem` vars_used = patWild
+>         tokPattern n t | t >= firstStartTok && t < fst_term =
+>           if coerce
+>             then var (mkHappyVar n)
+>             else patCon (makeAbsSynCon t) [var (mkHappyVar n)]
+>         tokPattern n t =
+>           if coerce
+>             then mkHappyTerminalVar n t
+>             else patCon "HappyTerminal" [mkHappyTerminalVar n t]
 >
->               cases = [ str "case " . pstr (var (extract t) % var (mkDummyVar n) :: HsExp)
->                       . str " of { " . tokPattern n t . str " -> "
->                       | (n,t) <- zip [1..] toks,
->                         n `elem` vars_used ]
+>         tokLets code''
+>            | coerce = cases code''
+>            | otherwise = code''
 >
->               extract t =
->                 if t >= firstStartTok && t < fst_term
->                   then mkHappyOut t
->                   else var "happyOutTok"
+>         cases :: HsExp -> HsExp
+>         cases = appEndo . mconcat $ do
+>           (n, t) <- zip [1..] toks
+>           guard (n `elem` vars_used)
+>           let
+>             scrut = var (extract t) % var (mkDummyVar n)
+>             pat   = tokPattern n t
+>           [Endo (expCase1 scrut pat)]
 >
->               lt = length toks
+>         extract t =
+>           if t >= firstStartTok && t < fst_term
+>             then mkHappyOut t
+>             else var "happyOutTok"
+>
+>         lt = length toks
 
->               this_absSynCon :: HsExp
->               this_absSynCon
->                 | coerce    = var (mkHappyIn nt)
->                 | otherwise = con (makeAbsSynCon nt)
+>         this_absSynCon :: HsExp
+>         this_absSynCon
+>           | coerce    = var (mkHappyIn nt)
+>           | otherwise = con (makeAbsSynCon nt)
 
 %-----------------------------------------------------------------------------
 The token conversion function.
@@ -410,7 +417,7 @@ The token conversion function.
 >       . interleave ";\n\t" (map doToken token_rep)
 >       . str "_ -> happyError' ((tk:tks), [])\n\t"
 >       . str "}\n\n"
->       . str "happyError_ explist " . eofTok . str " tk tks = happyError' (tks, explist)\n"
+>       . str "happyError_ explist " . pstr eofTok . str " tk tks = happyError' (tks, explist)\n"
 >       . str "happyError_ explist _ tk tks = happyError' ((tk:tks), explist)\n";
 >             -- when the token is EOF, tk == _|_ (notHappyAtAll)
 >             -- so we must not pass it to happyError'
@@ -445,7 +452,7 @@ The token conversion function.
 >       . interleave ";\n\t" (map doToken token_rep)
 >       . str "_ -> happyError' (tk, [])\n\t"
 >       . str "})\n\n"
->       . str "happyError_ explist " . eofTok . str " tk = happyError' (tk, explist)\n"
+>       . str "happyError_ explist " . pstr eofTok . str " tk = happyError' (tk, explist)\n"
 >       . str "happyError_ explist _ tk = happyError' (tk, explist)\n";
 >             -- superfluous pattern match needed to force happyError_ to
 >             -- have the correct type.
@@ -456,11 +463,11 @@ The token conversion function.
 >         eofAction tk =
 >           (case target of
 >               TargetArrayBased ->
->                 str "happyDoAction " . eofTok . strspace . str tk . str " action"
->               _ ->  str "action "     . eofTok . strspace . eofTok
+>                 str "happyDoAction " . pstr eofTok . strspace . str tk . str " action"
+>               _ ->  str "action "     . pstr eofTok . strspace . pstr eofTok
 >                   . strspace . str tk . str " (HappyState action)")
 >            . str " sts stk"
->         eofTok = showInt (tokIndex eof)
+>         eofTok = tokExp eof
 >
 >         doAction = case target of
 >           TargetArrayBased -> str "happyDoAction i tk action"
@@ -469,7 +476,7 @@ The token conversion function.
 >         doToken (i,tok)
 >               = str (removeDollarDollar tok)
 >               . str " -> cont "
->               . showInt (tokIndex i)
+>               . pstr (tokExp i)
 
 Use a variable rather than '_' to replace '$$', so we can use it on
 the left hand side of '@'.
@@ -478,22 +485,28 @@ the left hand side of '@'.
 >                                  Nothing -> xs
 >                                  Just fn -> fn "happy_dollar_dollar"
 
->    mkHappyTerminalVar :: Int -> Int -> String -> String
+>    mkHappyTerminalVar :: Int -> Int -> HsPat
 >    mkHappyTerminalVar i t =
 >     case tok_str_fn of
->       Nothing -> pat
->       Just fn -> brack (fn (pat []))
+>       Nothing -> var pat
+>       Just fn ->
+>         -- TODO: figure out how to update mapDollarDollar
+>         fromString (fn (pstr pat ""))
 >     where
 >         tok_str_fn = case lookup t token_rep of
->                     Nothing -> Nothing
->                     Just str' -> mapDollarDollar str'
->         pat = pstr (mkHappyVar i)
+>           Nothing -> Nothing
+>           Just str' -> mapDollarDollar str'
+>         pat = mkHappyVar i
 
->    tokIndex
->       = case target of
->               TargetHaskell    -> id
->               TargetArrayBased -> \i -> i - n_nonterminals - n_starts - 2
->                       -- tokens adjusted to start at zero, see ARRAY_NOTES
+>    tokExp :: Int -> HsExp
+>    tokExp = expIntHash' . tokIndex
+>
+>    tokIndex :: Int -> Int
+>    tokIndex = case target of
+>      TargetHaskell    -> id
+>      TargetArrayBased ->
+>        -- tokens adjusted to start at zero, see ARRAY_NOTES
+>        \i -> i - n_nonterminals - n_starts - 2
 
 %-----------------------------------------------------------------------------
 Action Tables.
@@ -679,8 +692,6 @@ action array indexed by (terminal * last_state) + state
 
 >    n_rules = length prods - 1 :: Int
 
->    showInt i = pstr (expIntHash' i)
->
 >    expIntHash'
 >      | ghc       = expIntHash
 >      | otherwise = expInt
@@ -1297,9 +1308,10 @@ slot is free or not.
 > mkAbsSynCon :: Array Int Int -> Int -> HsCon
 > mkAbsSynCon fx t = fromString $ "HappyAbsSyn" ++ show (fx ! t)
 
-> mkHappyVar, mkReduceFun, mkDummyVar :: Int -> HsVar
+> mkHappyVar, mkReduceFun, mkSpecReduceFun, mkDummyVar :: Int -> HsVar
 > mkHappyVar n = fromString ("happy_var_" ++ show n)
 > mkReduceFun n = fromString ("happyReduce_" ++ show n)
+> mkSpecReduceFun n = fromString ("happySpecReduce_" ++ show n)
 > mkDummyVar n = fromString ("happy_x_" ++ show n)
 
 > mkHappyIn, mkHappyOut :: Int -> HsVar

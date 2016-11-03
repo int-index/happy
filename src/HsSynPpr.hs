@@ -51,6 +51,8 @@ levelArr = LevelInfix (Rightfix 0)
 levelApp :: Level
 levelApp = LevelInfix (Leftfix 10)
 
+-- TODO: instead of LevelCtx reified as a data type, represent it
+-- as a function 'Level -> Doc -> Doc' (same as 'level' applied)
 data LevelCtx =
   LevelCtxUniv |
   LevelCtxNameBind |
@@ -62,7 +64,10 @@ data LevelCtx =
   LevelCtxInfixLhs Fixity |
   LevelCtxInfixRhs Fixity |
   LevelCtxCommentBefore |
-  LevelCtxCommentAfter
+  LevelCtxCommentAfter |
+  LevelCtxCaseScrut |
+  LevelCtxCasePat |
+  LevelCtxCaseExp
 
 levelCtxAppLhs :: LevelCtx
 levelCtxAppLhs = LevelCtxInfixLhs (Leftfix 10)
@@ -126,7 +131,7 @@ pprCommentOpen :: HsComment -> (Level, Doc)
 pprCommentOpen (HsComment ls) = case ls of
   []  -> (LevelAtom, empty)
   [l] -> (LevelUniv, "--" <+> text l)
-  _   -> (LevelAtom, hang "{-" 3 (vsep $ map text ls) $+$ "-}")
+  _   -> (LevelAtom, "{-" $+$ vsep (map text ls) $+$ "-}")
 
 pprCommentClosed :: HsComment -> Doc
 pprCommentClosed (HsComment ls) = case ls of
@@ -135,52 +140,63 @@ pprCommentClosed (HsComment ls) = case ls of
 
 
 pprIntHash :: HsHashLit -> Integer -> (Level, Doc)
-pprIntHash h n =
-  let
+pprIntHash h n = (lvl, nDoc)
+  where
     lvl = if n < 0 then LevelUniv else LevelAtom
     hDoc = case h of
       HsHashLit True -> "#"
       HsHashLit False -> empty
     nDoc = text (show n) <> hDoc
-  in
-    (lvl, nDoc)
 
 instance Ppr HsExp where
   ppr (HsExpUnsafeString s) = (LevelUniv, text s)
   ppr (HsExpVar v) = ppr v
   ppr (HsExpCon c) = ppr c
-  ppr (HsExpApp eLhs eRhs) =
-    let eLhsDoc = ppr' levelCtxAppLhs eLhs; eRhsDoc = ppr' levelCtxAppRhs eRhs
-    in (levelApp, sep [eLhsDoc, eRhsDoc])
-  ppr (HsExpLam p e) =
-    let pDoc = ppr' LevelCtxLamPat p; eDoc = ppr' LevelCtxLamBody e
-    in (LevelLam, hang ("\\" <> pDoc <+> "->") tw eDoc)
-  ppr (HsExpTup es) =
-    let esDocs = map (ppr' LevelCtxElem) es
-    in (LevelAtom, pprTuple esDocs)
-  ppr (HsExpList es) =
-    let
+  ppr (HsExpApp eLhs eRhs) = (levelApp, appDoc)
+    where
+      appDoc = hang eLhsDoc tw eRhsDoc
+      eLhsDoc = ppr' levelCtxAppLhs eLhs
+      eRhsDoc = ppr' levelCtxAppRhs eRhs
+  ppr (HsExpLam p e) = (LevelLam, lamDoc)
+    where
+      lamDoc = hang ("\\" <> pDoc <+> "->") tw eDoc
+      pDoc = ppr' LevelCtxLamPat p
+      eDoc = ppr' LevelCtxLamBody e
+  ppr (HsExpTup es) = (LevelAtom, pprTuple esDocs)
+    where
+      esDocs = map (ppr' LevelCtxElem) es
+  ppr (HsExpList es) = (LevelAtom, esDoc)
+    where
       esDocs = map (ppr' LevelCtxElem) es
       esDoc = brackets . fsep . punctuate comma $ esDocs
-    in
-      (LevelAtom, esDoc)
-  ppr (HsExpEnumFromTo eFrom eTo) =
-    let
+  ppr (HsExpCase e bs) = (LevelUniv, caseDoc)
+    where
+      caseDoc = hang headerDoc tw bsDoc
+      headerDoc = "case" <+> eDoc <+> "of"
+      eDoc = ppr' LevelCtxCaseScrut e
+      bsDoc
+        | null bsDocs = "{}"
+        | otherwise   = vsep bsDocs
+      bsDocs = do
+        (p, be) <- bs
+        let
+          pDoc = ppr' LevelCtxCasePat p
+          beDoc = ppr' LevelCtxCaseExp be
+        [hang (pDoc <+> "->") tw beDoc]
+  ppr (HsExpEnumFromTo eFrom eTo) = (LevelAtom, eeftDoc)
+    where
       eFromDoc = ppr' LevelCtxElem eFrom
       eToDoc = ppr' LevelCtxElem eTo
       eeftDoc = brackets $ eFromDoc <+> ".." <+> eToDoc
-    in
-      (LevelAtom, eeftDoc)
   ppr (HsExpInt h n) = pprIntHash h n
-  ppr (HsExpStr (HsHashLit False) s) =
-    let sDoc = text (show s)
-    in (LevelAtom, sDoc)
-  ppr (HsExpStr (HsHashLit True) s) =
-    let
+  ppr (HsExpStr (HsHashLit False) s) = (LevelAtom, sDoc)
+    where
+      sDoc = text (show s)
+  ppr (HsExpStr (HsHashLit True) s) = (LevelAtom, sDoc <> "#")
+    where
       sDoc
         | all isPrint s = text (show s)
         | otherwise = text (showHexStr s)
-    in (LevelAtom, sDoc <> "#")
 
 showHexStr :: String -> String
 showHexStr s = '\"' : foldr (.) id (map showHexChar s) "\""
@@ -192,12 +208,16 @@ pprTuple = parens . hsep . punctuate comma
 
 instance Ppr HsTy where
   ppr (HsTyUnsafeString s) = (LevelUniv, text s)
-  ppr (HsTyCommentBefore com t) =
-    let tDoc = ppr' LevelCtxCommentBefore t; comDoc = pprCommentClosed com
-    in (LevelComment, sep [comDoc, tDoc])
-  ppr (HsTyCommentAfter com t) =
-    let tDoc = ppr' LevelCtxCommentAfter t; comDoc = pprCommentClosed com
-    in (LevelComment, sep [tDoc, comDoc])
+  ppr (HsTyCommentBefore com t) = (LevelComment, tcomDoc)
+    where
+      tcomDoc = sep [comDoc, tDoc]
+      tDoc = ppr' LevelCtxCommentBefore t
+      comDoc = pprCommentClosed com
+  ppr (HsTyCommentAfter com t) = (LevelComment, tcomDoc)
+    where
+      tcomDoc = sep [tDoc, comDoc]
+      tDoc = ppr' LevelCtxCommentAfter t
+      comDoc = pprCommentClosed com
   ppr (HsTyTyVar tv) = ppr tv
   ppr (HsTyTyCon tc) = ppr tc
   ppr (HsTyTup ts) =
@@ -206,9 +226,11 @@ instance Ppr HsTy where
   ppr (HsTyList t) =
     let tl = brackets (ppr' LevelCtxElem t)
     in (LevelAtom, tl)
-  ppr (HsTyApp tLhs tRhs) =
-    let tLhsDoc = ppr' levelCtxAppLhs tLhs; tRhsDoc = ppr' levelCtxAppRhs tRhs
-    in (levelApp, sep [tLhsDoc, tRhsDoc])
+  ppr (HsTyApp tLhs tRhs) = (levelApp, taDoc)
+    where
+      taDoc = hang tLhsDoc tw tRhsDoc
+      tLhsDoc = ppr' levelCtxAppLhs tLhs
+      tRhsDoc = ppr' levelCtxAppRhs tRhs
   ppr (HsTyCtx tLhs tRhs) =
     let tLhsDoc = ppr' levelCtxArrLhs tLhs; tRhsDoc = ppr' levelCtxArrRhs tRhs
     in (levelArr, sep [tLhsDoc <+> "=>", tRhsDoc])
@@ -220,6 +242,7 @@ instance Ppr HsTy where
     in (LevelLam, "forall" <+> tvDoc <+> "." <+> tDoc)
 
 instance Ppr HsPat where
+  ppr (HsPatUnsafeString s) = (LevelUniv, text s)
   ppr (HsPatVar v) = ppr v
   ppr (HsPatCon c []) = ppr c
   ppr (HsPatCon c ps) =
@@ -298,12 +321,16 @@ instance Ppr HsDec where
       dfbWhereDoc =
         hang dfbDoc tw $
         hang "where" tw dsDoc
+  ppr (HsDecTypeSig [] _) = (LevelUniv, empty)
   ppr (HsDecTypeSig vs t) =
     (LevelUniv, hang (headerDoc <+> "::") tw tDoc)
     where
-      vsDocs = map (ppr' LevelCtxNameBind) vs
+      (vDoc:vsDocs) = map (ppr' LevelCtxNameBind) vs
       tDoc = ppr' LevelCtxLamBody t
-      headerDoc = hsep (punctuate "," vsDocs)
+      headerDoc
+        | null vsDocs = vDoc
+        | otherwise   = hang (vDoc <> ",") tw $
+            fsep (punctuate "," vsDocs)
   ppr (HsDecInst tc ts ds) =
     (LevelUniv, instDoc)
     where

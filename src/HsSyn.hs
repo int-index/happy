@@ -13,6 +13,8 @@ module HsSyn
   , expApp
   , expTup
   , expList
+  , expCase
+  , expCase1
   , expEnumFromTo
   , expInt
   , expIntHash
@@ -104,6 +106,7 @@ data HsExp =
   HsExpLam HsPat HsExp |
   HsExpTup [HsExp] |
   HsExpList [HsExp] |
+  HsExpCase HsExp [(HsPat, HsExp)] |
   HsExpEnumFromTo HsExp HsExp |
   HsExpInt HsHashLit Integer |
   HsExpStr HsHashLit String
@@ -126,6 +129,12 @@ expTup = HsExpTup
 
 expList :: [HsExp] -> HsExp
 expList = HsExpList
+
+expCase :: HsExp -> [(HsPat, HsExp)] -> HsExp
+expCase = HsExpCase
+
+expCase1 :: HsExp -> HsPat -> HsExp -> HsExp
+expCase1 e p be = expCase e [(p, be)]
 
 expEnumFromTo :: HsExp -> HsExp -> HsExp
 expEnumFromTo = HsExpEnumFromTo
@@ -193,11 +202,15 @@ tyApp :: HsTy -> [HsTy] -> HsTy
 tyApp = foldl' (%)
 
 data HsPat =
+  HsPatUnsafeString String |
   HsPatVar HsVar |
   HsPatCon HsCon [HsPat] |
   HsPatTup [HsPat] |
   HsPatInt HsHashLit Integer |
   HsPatWild
+
+instance IsString HsPat where
+  fromString = HsPatUnsafeString
 
 patCon :: HsCon -> [HsPat] -> HsPat
 patCon = HsPatCon

@@ -44,7 +44,9 @@ Gofer-like stuff:
 >
 
 
-Replace $$ with an arbitrary string, being careful to avoid ".." and '.'.
+Replace the first occurrence of $$ with an arbitrary string,
+being careful to avoid string and character literals (".." and '.').
+Returns 'Nothing' if there's no $$ in the template.
 
 > mapDollarDollar :: String -> Maybe (String -> String)
 > mapDollarDollar code0 = go code0 ""

@@ -15,6 +15,7 @@ module HsSyn
   , expList
   , expCase
   , expCase1
+  , expLet
   , expEnumFromTo
   , expInt
   , expIntHash
@@ -32,6 +33,7 @@ module HsSyn
   , HsPat(..)
   , patCon
   , patTup
+  , patList
   , patInt
   , patIntHash
   , patWild
@@ -107,6 +109,7 @@ data HsExp =
   HsExpTup [HsExp] |
   HsExpList [HsExp] |
   HsExpCase HsExp [(HsPat, HsExp)] |
+  HsExpLet [HsDec] HsExp |
   HsExpEnumFromTo HsExp HsExp |
   HsExpInt HsHashLit Integer |
   HsExpStr HsHashLit String
@@ -135,6 +138,9 @@ expCase = HsExpCase
 
 expCase1 :: HsExp -> HsPat -> HsExp -> HsExp
 expCase1 e p be = expCase e [(p, be)]
+
+expLet :: [HsDec] -> HsExp -> HsExp
+expLet = HsExpLet
 
 expEnumFromTo :: HsExp -> HsExp -> HsExp
 expEnumFromTo = HsExpEnumFromTo
@@ -206,6 +212,7 @@ data HsPat =
   HsPatVar HsVar |
   HsPatCon HsCon [HsPat] |
   HsPatTup [HsPat] |
+  HsPatList [HsPat] |
   HsPatInt HsHashLit Integer |
   HsPatWild
 
@@ -217,6 +224,9 @@ patCon = HsPatCon
 
 patTup :: [HsPat] -> HsPat
 patTup = HsPatTup
+
+patList :: [HsPat] -> HsPat
+patList = HsPatList
 
 patInt :: Integral n => n -> HsPat
 patInt = HsPatInt (HsHashLit False) . toInteger

@@ -168,7 +168,7 @@ instance Ppr HsExp where
   ppr (HsExpList es) = (LevelAtom, esDoc)
     where
       esDocs = map (ppr' LevelCtxElem) es
-      esDoc = brackets . fsep . punctuate comma $ esDocs
+      esDoc = pprList esDocs
   ppr (HsExpCase e bs) = (LevelUniv, caseDoc)
     where
       caseDoc = hang headerDoc tw bsDoc
@@ -183,6 +183,15 @@ instance Ppr HsExp where
           pDoc = ppr' LevelCtxCasePat p
           beDoc = ppr' LevelCtxCaseExp be
         [hang (pDoc <+> "->") tw beDoc]
+  ppr (HsExpLet ds e) = (LevelUniv, elDoc)
+    where
+      eDoc = ppr' LevelCtxUniv e
+      dsDoc = ppr' LevelCtxUniv ds
+      elDoc = sep [
+        "let",
+        nest tw dsDoc,
+        "in",
+        nest tw eDoc ]
   ppr (HsExpEnumFromTo eFrom eTo) = (LevelAtom, eeftDoc)
     where
       eFromDoc = ppr' LevelCtxElem eFrom
@@ -205,6 +214,9 @@ showHexStr s = '\"' : foldr (.) id (map showHexChar s) "\""
 
 pprTuple :: [Doc] -> Doc
 pprTuple = parens . hsep . punctuate comma
+
+pprList :: [Doc] -> Doc
+pprList = brackets . fsep . punctuate comma
 
 instance Ppr HsTy where
   ppr (HsTyUnsafeString s) = (LevelUniv, text s)
@@ -248,9 +260,14 @@ instance Ppr HsPat where
   ppr (HsPatCon c ps) =
     let cDoc = ppr' LevelCtxCon c; psDocs = map (ppr' LevelCtxLamPat) ps
     in (levelApp, hsep (cDoc : psDocs))
-  ppr (HsPatTup ps) =
-    let psDocs = map (ppr' LevelCtxElem) ps
-    in (LevelAtom, pprTuple psDocs)
+  ppr (HsPatTup ps) = (LevelAtom, psDoc)
+    where
+      psDocs = map (ppr' LevelCtxElem) ps
+      psDoc = pprTuple psDocs
+  ppr (HsPatList ps) = (LevelAtom, psDoc)
+    where
+      psDocs = map (ppr' LevelCtxElem) ps
+      psDoc = pprList psDocs
   ppr (HsPatInt h n) = pprIntHash h n
   ppr HsPatWild = (LevelAtom, "_")
 

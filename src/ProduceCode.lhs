@@ -12,8 +12,7 @@ The code generator.
 > import Data.Version           ( showVersion )
 > import Grammar
 > import Target                 ( Target(..) )
-> import GenUtils               ( mapDollarDollar, str, nl, strspace,
->                                 interleave, brack' )
+> import GenUtils               ( mapDollarDollar, str, nl, interleave, brack' )
 > import HsSyn
 > import HsSynPpr
 
@@ -79,7 +78,7 @@ Produce the complete output file.
 >       produceExpListPerState ++
 >       produceActionTable target ++
 >       produceReductions ++
->       [fromString $ produceTokenConverter ""] ++ -- TODO
+>       produceTokenConverter ++
 >       produceIdentityStuff ++
 >       produceMonadStuff ++
 >       [fromString $ produceEntries ""] ++ -- TODO
@@ -404,86 +403,148 @@ happyMonadReduce to get polymorphic recursion.  Sigh.
 %-----------------------------------------------------------------------------
 The token conversion function.
 
->    produceTokenConverter
->       = case lexer' of {
+>    produceTokenConverter = case lexer' of
 >
->       Nothing ->
->         str "happyNewToken action sts stk [] =\n\t"
->       . eofAction "notHappyAtAll"
->       . str " []\n\n"
->       . str "happyNewToken action sts stk (tk:tks) =\n\t"
->       . str "let cont i = " . doAction . str " sts stk tks in\n\t"
->       . str "case tk of {\n\t"
->       . interleave ";\n\t" (map doToken token_rep)
->       . str "_ -> happyError' ((tk:tks), [])\n\t"
->       . str "}\n\n"
->       . str "happyError_ explist " . pstr eofTok . str " tk tks = happyError' (tks, explist)\n"
->       . str "happyError_ explist _ tk tks = happyError' ((tk:tks), explist)\n";
->             -- when the token is EOF, tk == _|_ (notHappyAtAll)
->             -- so we must not pass it to happyError'
+>       Nothing -> [
+>         decFun "happyNewToken"
+>           [var "action", var "sts", var "stk", patList []] $
+>           eofAction (var "notHappyAtAll") % expList [],
+>         let
+>           defaultExp =
+>             var "happyError'" % expTup [
+>               con ":" % var "tk" % var "tks",
+>               expList [] ]
+>           caseExp =
+>             expCase (var "tk") $
+>               map doToken token_rep ++ [(patWild, defaultExp)]
+>           letExp =
+>             expLet [
+>               decFun "cont" [var "i"] $
+>                 doAction % var "sts" % var "stk" % var "tks" ]
+>             caseExp
+>         in
+>           decFun "happyNewToken"
+>             [ var "action", var "sts", var "stk",
+>               patCon ":" [var "tk", var "tks"] ]
+>             letExp,
+>         decFun "happyError_"
+>           [var "explist", tokPat eof, var "tk", var "tks"]
+>           (var "happyError'" % expTup [var "tks", var "explist"]),
+>           -- when the token is EOF, tk == _|_ (notHappyAtAll)
+>           -- so we must not pass it to happyError'
+>         decFun "happyError_"
+>           [var "explist", patWild, var "tk", var "tks"]
+>           (var "happyError'" % expTup [
+>             con ":" % var "tk" % var "tks",
+>             var "explist"]) ]
 
 >       Just (lexer'',eof') ->
->       case (target, ghc) of
->          (TargetHaskell, True) ->
->                 str "happyNewToken :: (Happy_GHC_Exts.Int#\n"
->               . str "                   -> Happy_GHC_Exts.Int#\n"
->               . str "                   -> Token\n"
->               . str "                   -> HappyState Token (t -> [Char] -> Int -> ParseResult a)\n"
->               . str "                   -> [HappyState Token (t -> [Char] -> Int -> ParseResult a)]\n"
->               . str "                   -> t\n"
->               . str "                   -> [Char]\n"
->               . str "                   -> Int\n"
->               . str "                   -> ParseResult a)\n"
->               . str "                 -> [HappyState Token (t -> [Char] -> Int -> ParseResult a)]\n"
->               . str "                 -> t\n"
->               . str "                 -> [Char]\n"
->               . str "                 -> Int\n"
->               . str "                 -> ParseResult a\n"
->          _ -> id
->       . str "happyNewToken action sts stk\n\t= "
->       . str lexer''
->       . str "(\\tk -> "
->       . str "\n\tlet cont i = "
->       . doAction
->       . str " sts stk in\n\t"
->       . str "case tk of {\n\t"
->       . str (eof' ++ " -> ")
->       . eofAction "tk" . str ";\n\t"
->       . interleave ";\n\t" (map doToken token_rep)
->       . str "_ -> happyError' (tk, [])\n\t"
->       . str "})\n\n"
->       . str "happyError_ explist " . pstr eofTok . str " tk = happyError' (tk, explist)\n"
->       . str "happyError_ explist _ tk = happyError' (tk, explist)\n";
+>         (if target == TargetHaskell && ghc
+>           then [
+>             decTypeSig ["happyNewToken"] $
+>               ( qtyCon "Happy_GHC_Exts" "Int#" `tyArr`
+>                 qtyCon "Happy_GHC_Exts" "Int#" `tyArr`
+>                 tyCon "Token" `tyArr`
+>                 ( tyCon "HappyState" % tyCon "Token" %
+>                   ( tyVar "t" `tyArr`
+>                     tyList (tyCon "Char") `tyArr`
+>                     tyCon "Int" `tyArr`
+>                     tyCon "ParseResult" % tyVar "a" ) ) `tyArr`
+>                 tyList (
+>                   tyCon "HappyState" % tyCon "Token" %
+>                   ( tyVar "t" `tyArr`
+>                     tyList (tyCon "Char") `tyArr`
+>                     tyCon "Int" `tyArr`
+>                     tyCon "ParseResult" % tyVar "a" ) ) `tyArr`
+>                 tyVar "t" `tyArr`
+>                 tyList (tyCon "Char") `tyArr`
+>                 tyCon "Int" `tyArr`
+>                 tyCon "ParseResult" % tyVar "a" ) `tyArr`
+>               tyList (
+>                 tyCon "HappyState" % tyCon "Token" %
+>                   ( tyVar "t" `tyArr`
+>                     tyList (tyCon "Char") `tyArr`
+>                     tyCon "Int" `tyArr`
+>                     tyCon "ParseResult" % tyVar "a" ) ) `tyArr`
+>               tyVar "t" `tyArr`
+>               tyList (tyCon "Char") `tyArr`
+>               tyCon "Int" `tyArr`
+>               tyCon "ParseResult" % tyVar "a"
+>             ]
+>           else []) ++
+>         [ let
+>             defaultExp =
+>               var "happyError'" % expTup [var "tk", expList []]
+>             caseExp =
+>               expCase (var "tk") $
+>                 [(fromString eof', eofAction (var "tk"))] ++
+>                 map doToken token_rep ++
+>                 [(patWild, defaultExp)]
+>             letExp =
+>               expLet [
+>                 decFun "cont" [var "i"] $
+>                   doAction % var "sts" % var "stk" ]
+>               caseExp
+>             lamExp = expLam (var "tk") letExp
+>           in
+>             decFun "happyNewToken"
+>               [var "action", var "sts", var "stk"]
+>               (fromString lexer'' % lamExp),
+>           decFun "happyError_"
+>             [var "explist", tokPat eof, var "tk"]
+>             (var "happyError'" % expTup [var "tk", var "explist"]),
 >             -- superfluous pattern match needed to force happyError_ to
 >             -- have the correct type.
->       }
+>           decFun "happyError_"
+>             [var "explist", patWild, var "tk"]
+>             (var "happyError'" % expTup [var "tk", var "explist"]) ]
 
 >       where
 
->         eofAction tk =
->           (case target of
->               TargetArrayBased ->
->                 str "happyDoAction " . pstr eofTok . strspace . str tk . str " action"
->               _ ->  str "action "     . pstr eofTok . strspace . pstr eofTok
->                   . strspace . str tk . str " (HappyState action)")
->            . str " sts stk"
->         eofTok = tokExp eof
+>         eofAction :: HsExp -> HsExp
+>         eofAction tk
+>           | target == TargetArrayBased =
+>               var "happyDoAction" %
+>                 tokExp eof %
+>                 tk %
+>                 var "action" %
+>                 var "sts" %
+>                 var "stk"
+>           | otherwise =
+>               var "action" %
+>                 tokExp eof %
+>                 tokExp eof %
+>                 tk %
+>                 (con "HappyState" % var "action") %
+>                 var "sts" %
+>                 var "stk"
 >
->         doAction = case target of
->           TargetArrayBased -> str "happyDoAction i tk action"
->           _   -> str "action i i tk (HappyState action)"
+>         doAction :: HsExp
+>         doAction
+>           | target == TargetArrayBased =
+>               var "happyDoAction" %
+>                 var "i" %
+>                 var "tk" %
+>                 var "action"
+>           | otherwise =
+>               var "action" %
+>                 var "i" %
+>                 var "i" %
+>                 var "tk" %
+>                 (con "HappyState" % var "action")
 >
->         doToken (i,tok)
->               = str (removeDollarDollar tok)
->               . str " -> cont "
->               . pstr (tokExp i)
+>         doToken :: (Int, String) -> (HsPat, HsExp)
+>         doToken (i,tok) =
+>           (removeDollarDollar tok, var "cont" % tokExp i)
 
 Use a variable rather than '_' to replace '$$', so we can use it on
 the left hand side of '@'.
 
->         removeDollarDollar xs = case mapDollarDollar xs of
->                                  Nothing -> xs
->                                  Just fn -> fn "happy_dollar_dollar"
+>         removeDollarDollar :: String -> HsPat
+>         removeDollarDollar xs = fromString $
+>           case mapDollarDollar xs of
+>             Nothing -> xs
+>             Just fn -> fn "happy_dollar_dollar"
 
 >    mkHappyTerminalVar :: Int -> Int -> HsPat
 >    mkHappyTerminalVar i t =
@@ -500,6 +561,9 @@ the left hand side of '@'.
 
 >    tokExp :: Int -> HsExp
 >    tokExp = expIntHash' . tokIndex
+>
+>    tokPat :: Int -> HsPat
+>    tokPat = patIntHash' . tokIndex
 >
 >    tokIndex :: Int -> Int
 >    tokIndex = case target of
@@ -629,7 +693,7 @@ machinery to discard states in the parser...
 >             var "happyGoto" % var (mkActionName i) ]
 >
 >         actionFunction t =
->           decFun (mkActionName state) [expPatHash' t]
+>           decFun (mkActionName state) [patIntHash' t]
 >
 >         produceDefaultAction
 >           | ghc =
@@ -696,7 +760,7 @@ action array indexed by (terminal * last_state) + state
 >      | ghc       = expIntHash
 >      | otherwise = expInt
 >
->    expPatHash'
+>    patIntHash'
 >      | ghc       = patIntHash
 >      | otherwise = patInt
 

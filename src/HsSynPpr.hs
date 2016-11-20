@@ -169,6 +169,16 @@ instance Ppr HsExp where
     where
       esDocs = map (ppr' LevelCtxElem) es
       esDoc = pprList esDocs
+  ppr (HsExpRec c fs) = (LevelAtom, erDoc)
+    where
+      cDoc = ppr' LevelCtxUniv c
+      fsDocs = do
+        (name, e) <- fs
+        let
+          nameDoc = ppr' LevelCtxUniv name
+          eDoc = ppr' LevelCtxUniv e
+        [hang (nameDoc <+> equals) tw eDoc]
+      erDoc = cDoc <+> pprRec fsDocs
   ppr (HsExpCase e bs) = (LevelUniv, caseDoc)
     where
       caseDoc = hang headerDoc tw bsDoc
@@ -207,6 +217,7 @@ instance Ppr HsExp where
         | all isPrint s = text (show s)
         | otherwise = text (showHexStr s)
 
+-- TODO: split into multiline literals when too long
 showHexStr :: String -> String
 showHexStr s = '\"' : foldr (.) id (map showHexChar s) "\""
   where
@@ -217,6 +228,9 @@ pprTuple = parens . hsep . punctuate comma
 
 pprList :: [Doc] -> Doc
 pprList = brackets . fsep . punctuate comma
+
+pprRec :: [Doc] -> Doc
+pprRec = braces . vsep . punctuate comma
 
 instance Ppr HsTy where
   ppr (HsTyUnsafeString s) = (LevelUniv, text s)
@@ -233,33 +247,47 @@ instance Ppr HsTy where
   ppr (HsTyTyVar tv) = ppr tv
   ppr (HsTyTyCon tc) = ppr tc
   ppr (HsTyTup ts) =
-    let tsDocs = map (ppr' LevelCtxElem) ts
-    in (LevelAtom, pprTuple tsDocs)
+    (LevelAtom, pprTuple tsDocs)
+    where
+      tsDocs = map (ppr' LevelCtxElem) ts
   ppr (HsTyList t) =
-    let tl = brackets (ppr' LevelCtxElem t)
-    in (LevelAtom, tl)
+    (LevelAtom, tl)
+    where
+      tl = brackets (ppr' LevelCtxElem t)
   ppr (HsTyApp tLhs tRhs) = (levelApp, taDoc)
     where
       taDoc = hang tLhsDoc tw tRhsDoc
       tLhsDoc = ppr' levelCtxAppLhs tLhs
       tRhsDoc = ppr' levelCtxAppRhs tRhs
   ppr (HsTyCtx tLhs tRhs) =
-    let tLhsDoc = ppr' levelCtxArrLhs tLhs; tRhsDoc = ppr' levelCtxArrRhs tRhs
-    in (levelArr, sep [tLhsDoc <+> "=>", tRhsDoc])
+    (levelArr, tCtxDoc)
+    where
+      tLhsDoc = ppr' levelCtxArrLhs tLhs
+      tRhsDoc = ppr' levelCtxArrRhs tRhs
+      tCtxDoc = sep [tLhsDoc <+> "=>", tRhsDoc]
   ppr (HsTyArr tLhs tRhs) =
-    let tLhsDoc = ppr' levelCtxArrLhs tLhs; tRhsDoc = ppr' levelCtxArrRhs tRhs
-    in (levelArr, sep [tLhsDoc <+> "->", tRhsDoc])
+    (levelArr, tArrDoc)
+    where
+      tLhsDoc = ppr' levelCtxArrLhs tLhs
+      tRhsDoc = ppr' levelCtxArrRhs tRhs
+      tArrDoc = sep [tLhsDoc <+> "->", tRhsDoc]
   ppr (HsTyForall tv t) =
-    let tvDoc = ppr' LevelCtxLamPat tv; tDoc = ppr' LevelCtxLamBody t
-    in (LevelLam, "forall" <+> tvDoc <+> "." <+> tDoc)
+    (LevelLam, tfDoc)
+    where
+      tvDoc = ppr' LevelCtxLamPat tv
+      tDoc = ppr' LevelCtxLamBody t
+      tfDoc = "forall" <+> tvDoc <+> "." <+> tDoc
 
 instance Ppr HsPat where
   ppr (HsPatUnsafeString s) = (LevelUniv, text s)
   ppr (HsPatVar v) = ppr v
   ppr (HsPatCon c []) = ppr c
   ppr (HsPatCon c ps) =
-    let cDoc = ppr' LevelCtxCon c; psDocs = map (ppr' LevelCtxLamPat) ps
-    in (levelApp, hsep (cDoc : psDocs))
+    (levelApp, pcDoc)
+    where
+      cDoc = ppr' LevelCtxCon c
+      psDocs = map (ppr' LevelCtxLamPat) ps
+      pcDoc = hsep (cDoc : psDocs)
   ppr (HsPatTup ps) = (LevelAtom, psDoc)
     where
       psDocs = map (ppr' LevelCtxElem) ps
@@ -276,12 +304,24 @@ instance Ppr [HsDec] where
     let dsDocs = map (ppr' LevelCtxUniv) ds
     in (LevelUniv, vsep dsDocs)
 
+instance Ppr HsTyHead where
+  ppr (HsTyHeadUnsafeString s) = (LevelUniv, text s)
+  ppr (HsTyHead tc tvs) =
+    (LevelUniv, thDoc)
+    where
+      thDoc = hsep $
+        ppr' LevelCtxNameBind tc :
+        map (ppr' LevelCtxLamPat) tvs
+
 instance Ppr HsDec where
   ppr (HsDecUnsafeString s) = (LevelUniv, text s)
   ppr (HsDecComment com) = pprCommentOpen com
   ppr (HsDecPragma name content) =
-    let nameDoc = text (map toUpper name); contentDoc = text content
-    in (LevelUniv, "{-#" <+> nameDoc <+> contentDoc <+> "#-}" )
+    (LevelUniv, dpDoc)
+    where
+      nameDoc = text (map toUpper name)
+      contentDoc = text content
+      dpDoc = "{-#" <+> nameDoc <+> contentDoc <+> "#-}"
   ppr (HsDecInlinePragma (HsVar v)) =
     ppr (HsDecPragma "INLINE" v)
   ppr (HsDecNoInlinePragma (HsVar v)) =
@@ -295,37 +335,51 @@ instance Ppr HsDec where
           "#else",
           ppr' LevelCtxUniv elseD,
           "#endif" ]
-  ppr (HsDecType tc tvs t) =
+  ppr (HsDecType th t) =
     (LevelUniv, hang (headerDoc <+> equals) tw tDoc)
     where
-      tcDoc = ppr' LevelCtxNameBind tc
+      thDoc = ppr' LevelCtxUniv th
       tDoc = ppr' LevelCtxLamBody t
-      tvsDocs = map (ppr' LevelCtxLamPat) tvs
-      headerDoc = hsep ("type" : tcDoc : tvsDocs)
-  ppr (HsDecNewtype tc tvs c t) =
+      headerDoc = "type" <+> thDoc
+  ppr (HsDecNewtype th c t) =
     (LevelUniv, hang (headerDoc <+> equals) tw cdDoc)
     where
-      tcDoc = ppr' LevelCtxNameBind tc
-      tvsDocs = map (ppr' LevelCtxLamPat) tvs
-      headerDoc = hsep ("newtype" : tcDoc : tvsDocs)
+      thDoc = ppr' LevelCtxUniv th
+      headerDoc = "newtype" <+> thDoc
       cDoc = ppr' LevelCtxCon c
       tDoc = ppr' LevelCtxLamPat t
       cdDoc = cDoc <+> tDoc
-  ppr (HsDecData tc tvs cds) =
+  ppr (HsDecData th cds) =
     (LevelUniv, hang (headerDoc <+> equals) tw cdsDoc)
     where
-      tcDoc = ppr' LevelCtxNameBind tc
-      tvsDocs = map (ppr' LevelCtxLamPat) tvs
-      headerDoc = hsep ("data" : tcDoc : tvsDocs)
+      thDoc = ppr' LevelCtxUniv th
+      headerDoc = "data" <+> thDoc
       cdsDoc = sep . punctuate " |" $ do
-        (c, ts) <- cds
-        let
-          cDoc = ppr' LevelCtxCon c;
-          tsDocs = map (ppr' LevelCtxLamPat) ts
-        [cDoc <+> hsep tsDocs]
+        cd <- cds
+        return $ case cd of
+          HsConDef c ts ->
+            let
+              cDoc = ppr' LevelCtxCon c
+              tsDocs = map (ppr' LevelCtxLamPat) ts
+            in
+              cDoc <+> hsep tsDocs
+          HsConDefRec c fs ->
+            let
+              cDoc = ppr' LevelCtxCon c
+              fsDoc = pprRec $ do
+                (name, ty) <- fs
+                let
+                  nameDoc = ppr' LevelCtxUniv name
+                  tyDoc = ppr' LevelCtxUniv ty
+                [hang (nameDoc <+> "::") tw tyDoc]
+            in
+              cDoc <+> fsDoc
   ppr (HsDecPatBind p e) =
-    let pDoc = ppr' LevelCtxPatBind p; eDoc = ppr' LevelCtxLamBody e
-    in (LevelUniv, hang (pDoc <+> equals) tw eDoc)
+    (LevelUniv, pbDoc)
+    where
+      pDoc = ppr' LevelCtxPatBind p
+      eDoc = ppr' LevelCtxLamBody e
+      pbDoc = hang (pDoc <+> equals) tw eDoc
   ppr (HsDecFunBind v ps e ds) =
     (LevelUniv, if null ds then dfbDoc else dfbWhereDoc)
     where

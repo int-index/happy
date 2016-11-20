@@ -12,7 +12,7 @@ The code generator.
 > import Data.Version           ( showVersion )
 > import Grammar
 > import Target                 ( Target(..) )
-> import GenUtils               ( mapDollarDollar, str, nl, interleave, brack' )
+> import GenUtils               ( mapDollarDollar, str, interleave, brack' )
 > import HsSyn
 > import HsSynPpr
 
@@ -83,7 +83,7 @@ Produce the complete output file.
 >       produceMonadStuff ++
 >       [fromString $ produceEntries ""] ++ -- TODO
 >       [produceStrict strict] ++
->       [fromString $ produceAttributes attributes' attributetype' ""] ++ -- TODO
+>       produceAttributes attributes' attributetype' ++
 >       fmap fromString (maybeToList module_trailer)
 >  where
 >    n_starts = length starts' :: Int
@@ -147,11 +147,11 @@ If we're using coercions, we need to generate the injections etc.
 >             qvar "Happy_GHC_Exts" "unsafeCoerce#" % "x",
 >           decInlinePragma (mkHappyOut n) ]
 >       in
->         [ decNewtype "HappyAbsSyn" all_tyvars' -- see NOTE below
+>         [ decNewtype (tyHead "HappyAbsSyn" all_tyvars') -- see NOTE below
 >             (con "HappyAbsSyn") (tyCon "HappyAny"),
 >           decCppIfElse "__GLASGOW_HASKELL__ >= 607"
->             (decType "HappyAny" [] (qtyCon "Happy_GHC_Exts" "Any"))
->             (decType "HappyAny" [] ("a" `tyForall` tyVar "a")) ] ++
+>             (decType (tyHead "HappyAny" []) (qtyCon "Happy_GHC_Exts" "Any"))
+>             (decType (tyHead "HappyAny" []) ("a" `tyForall` tyVar "a")) ] ++
 >         concat [ inject n ty ++ extract n ty | (n,ty) <- assocs nt_types ] ++
 >          -- token injector
 >         [ decTypeSig ["happyInTok"] $
@@ -188,13 +188,13 @@ example where this matters.
 >     | otherwise =
 >       let
 >         absSynCons =
->           [ ("HappyTerminal", [token']),
->             ("HappyErrorToken", [tyCon "Int"]) ] ++
->           [ (makeAbsSynCon n, [tyVar (type_param n ty)]) |
+>           [ conDef "HappyTerminal" [token'],
+>             conDef "HappyErrorToken" [tyCon "Int"] ] ++
+>           [ conDef (makeAbsSynCon n) [tyVar (type_param n ty)] |
 >             (n, ty) <- assocs nt_types,
 >             (nt_types_index ! n) == n ]
 >       in
->         [ decData "HappyAbsSyn" all_tyvars' absSynCons ]
+>         [ decData (tyHead "HappyAbsSyn" all_tyvars') absSynCons ]
 
 >     where
 >       all_tyvars' :: FromTyVar a => [a]
@@ -254,7 +254,7 @@ based parsers -- types aren't as important there).
 >             "/type M a = .../, then /(HappyReduction M)/",
 >             "is not allowed.  But Happy is a",
 >             "code-generator that can just substitute it.\n",
->             prettyPrint (decType "HappyReduction" ["m"] $ happyReduction (tyVar "m")) ]
+>             prettyPrint (decType (tyHead "HappyReduction" ["m"]) $ happyReduction (tyVar "m")) ]
 >         happyReductionValue =
 >           tyCommentBefore
 >             (prettyPrint (tyCon "HappyReduction" % monad_tycon') ++ " =")
@@ -800,11 +800,11 @@ outlaw them inside { }
 
 >    produceIdentityStuff | use_monad = []
 >     | imported_identity' = [
->         decType "HappyIdentity" [] (tyCon "Identity"),
+>         decType (tyHead "HappyIdentity" []) (tyCon "Identity"),
 >         decFun "happyIdentity" [] (con "Identity"),
 >         decFun "happyRunIdentity" [] (var "runIdentity") ]
 >     | otherwise = [
->         decNewtype "HappyIdentity" ["a"]
+>         decNewtype (tyHead "HappyIdentity" ["a"])
 >           (con "HappyIdentity") (tyVar "a"),
 >         decFun "happyIdentity" [] (con "HappyIdentity"),
 >         decFun "happyRunIdentity"
@@ -987,20 +987,27 @@ directive determins the API of the provided function.
 ----------------------------------------------------------------------------
 -- Produce attributes declaration for attribute grammars
 
-> produceAttributes :: [(String, String)] -> String -> String -> String
-> produceAttributes [] _ = id
-> produceAttributes attrs attributeType
->     = str "data " . attrHeader . str " = HappyAttributes {" . attributes' . str "}" . nl
->     . str "happyEmptyAttrs = HappyAttributes {" . attrsErrors . str "}" . nl
-
->   where attributes'  = foldl1 (\x y -> x . str ", " . y) $ map formatAttribute attrs
->         formatAttribute (ident,typ) = str ident . str " :: " . str typ
->         attrsErrors = foldl1 (\x y -> x . str ", " . y) $ map attrError attrs
->         attrError (ident,_) = str ident . str " = error \"invalid reference to attribute '" . str ident . str "'\""
->         attrHeader =
->             case attributeType of
->             [] -> str "HappyAttributes"
->             _  -> str attributeType
+> produceAttributes :: [(String, String)] -> String -> [HsDec]
+> produceAttributes []    _             = []
+> produceAttributes attrs attributeType = [
+>   decData attrHeader
+>     [conDefRec "HappyAttributes" $ map formatAttribute attrs],
+>   decFun "happyEmptyAttrs" [] $
+>     expRec "HappyAttributes" (map attrError attrs) ]
+>   where
+>     formatAttribute (ident, typ) = (ident', typ')
+>       where
+>         ident' = fromString ident :: HsVar
+>         typ' = fromString typ :: HsTy
+>     attrError (ident, _) = (ident', errExp)
+>       where
+>         ident' = fromString ident :: HsVar
+>         errExp = var "error" % expStr errMsg
+>         errMsg = "invalid reference to attribute '" ++ ident ++ "'"
+>     attrHeader =
+>       case attributeType of
+>         [] -> tyHead "HappyAttributes" []
+>         _  -> fromString attributeType
 
 
 -----------------------------------------------------------------------------

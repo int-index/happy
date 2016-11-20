@@ -13,6 +13,7 @@ module HsSyn
   , expApp
   , expTup
   , expList
+  , expRec
   , expCase
   , expCase1
   , expLet
@@ -37,6 +38,11 @@ module HsSyn
   , patInt
   , patIntHash
   , patWild
+  , HsTyHead(..)
+  , tyHead
+  , HsConDef(..)
+  , conDef
+  , conDefRec
   , HsDec(..)
   , decComment
   , decPragma
@@ -108,6 +114,7 @@ data HsExp =
   HsExpLam HsPat HsExp |
   HsExpTup [HsExp] |
   HsExpList [HsExp] |
+  HsExpRec HsCon [(HsVar, HsExp)] |
   HsExpCase HsExp [(HsPat, HsExp)] |
   HsExpLet [HsDec] HsExp |
   HsExpEnumFromTo HsExp HsExp |
@@ -132,6 +139,9 @@ expTup = HsExpTup
 
 expList :: [HsExp] -> HsExp
 expList = HsExpList
+
+expRec :: HsCon -> [(HsVar, HsExp)] -> HsExp
+expRec = HsExpRec
 
 expCase :: HsExp -> [(HsPat, HsExp)] -> HsExp
 expCase = HsExpCase
@@ -237,6 +247,26 @@ patIntHash = HsPatInt (HsHashLit True) . toInteger
 patWild :: HsPat
 patWild = HsPatWild
 
+data HsTyHead =
+  HsTyHeadUnsafeString String |
+  HsTyHead HsTyCon [HsTyVar]
+
+instance IsString HsTyHead where
+  fromString = HsTyHeadUnsafeString
+
+tyHead :: HsTyCon -> [HsTyVar] -> HsTyHead
+tyHead = HsTyHead
+
+data HsConDef =
+  HsConDef HsCon [HsTy] |
+  HsConDefRec HsCon [(HsVar, HsTy)]
+
+conDef :: HsCon -> [HsTy] -> HsConDef
+conDef = HsConDef
+
+conDefRec :: HsCon -> [(HsVar, HsTy)] -> HsConDef
+conDefRec = HsConDefRec
+
 data HsDec =
   HsDecUnsafeString String |
   HsDecComment HsComment |
@@ -244,9 +274,9 @@ data HsDec =
   HsDecInlinePragma HsVar |
   HsDecNoInlinePragma HsVar |
   HsDecCppIfElse String HsDec HsDec |
-  HsDecType HsTyCon [HsTyVar] HsTy |
-  HsDecNewtype HsTyCon [HsTyVar] HsCon HsTy |
-  HsDecData HsTyCon [HsTyVar] [(HsCon, [HsTy])] |
+  HsDecType HsTyHead HsTy |
+  HsDecNewtype HsTyHead HsCon HsTy |
+  HsDecData HsTyHead [HsConDef] |
   HsDecPatBind HsPat HsExp |
   HsDecFunBind HsVar [HsPat] HsExp [HsDec] |
   HsDecTypeSig [HsVar] HsTy |
@@ -270,13 +300,13 @@ decNoInlinePragma = HsDecNoInlinePragma
 decCppIfElse :: String -> HsDec -> HsDec -> HsDec
 decCppIfElse = HsDecCppIfElse
 
-decType :: HsTyCon -> [HsTyVar] -> HsTy -> HsDec
+decType :: HsTyHead -> HsTy -> HsDec
 decType = HsDecType
 
-decNewtype :: HsTyCon -> [HsTyVar] -> HsCon -> HsTy -> HsDec
+decNewtype :: HsTyHead-> HsCon -> HsTy -> HsDec
 decNewtype = HsDecNewtype
 
-decData :: HsTyCon -> [HsTyVar] -> [(HsCon, [HsTy])] -> HsDec
+decData :: HsTyHead -> [HsConDef] -> HsDec
 decData = HsDecData
 
 decVal :: HsPat -> HsExp -> HsDec

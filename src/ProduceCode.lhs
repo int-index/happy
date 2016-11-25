@@ -12,7 +12,7 @@ The code generator.
 > import Data.Version           ( showVersion )
 > import Grammar
 > import Target                 ( Target(..) )
-> import GenUtils               ( mapDollarDollar, str, interleave, brack' )
+> import GenUtils               ( mapDollarDollar )
 > import HsSyn
 > import HsSynPpr
 
@@ -81,7 +81,7 @@ Produce the complete output file.
 >       produceTokenConverter ++
 >       produceIdentityStuff ++
 >       produceMonadStuff ++
->       [fromString $ produceEntries ""] ++ -- TODO
+>       produceEntries ++
 >       [produceStrict strict] ++
 >       produceAttributes attributes' attributetype' ++
 >       fmap fromString (maybeToList module_trailer)
@@ -919,40 +919,42 @@ directive determins the API of the provided function.
 -----------------------------------------------------------------------------
 -- Produce the parser entry and exit points
 
->    produceEntries
->       = interleave "\n\n" (map produceEntry (zip starts' [0..]))
->       . if null attributes' then id else produceAttrEntries starts'
+>    produceEntries =
+>      map produceEntry (zip starts' [0..]) ++
+>      (if null attributes' then [] else produceAttrEntries starts')
 
->    produceEntry :: ((String, t0, Int, t1), Int) -> String -> String
->    produceEntry ((name, _start_nonterm, accept_nonterm, _partial), no)
->       = (if null attributes' then str name else str "do_" . str name)
->       . maybe_tks
->       . str " = "
->       . str unmonad
->       . str "happySomeParser where\n"
->       . str "  happySomeParser = happyThen (happyParse "
->       . case target of
->            TargetHaskell -> str "action_" . shows no
->            TargetArrayBased
->                | ghc       -> shows no . str "#"
->                | otherwise -> shows no
->       . maybe_tks
->       . str ") "
->       . brack' (if coerce
->                    then str "\\x -> happyReturn (happyOut"
->                       . shows accept_nonterm . str " x)"
->                    else str "\\x -> case x of {HappyAbsSyn"
->                       . shows (nt_types_index ! accept_nonterm)
->                       . str " z -> happyReturn z; _other -> notHappyAtAll }"
->                )
+>    produceEntry :: ((String, t0, Int, t1), Int) -> HsDec
+>    produceEntry ((name, _start_nonterm, accept_nonterm, _partial), no) =
+>      decFunWhere
+>        (fromString $ if null attributes' then name else "do_" ++ name)
+>        (var <$> maybeToList maybe_tks)
+>        (unmonad (var "happySomeParser"))
+>        [
+>          decFun "happySomeParser" [] $
+>            (var "happyThen" % (
+>              maybe id (\tks -> (% var tks)) maybe_tks (
+>                var "happyParse" % case target of
+>                  TargetHaskell -> var (mkActionName no)
+>                  TargetArrayBased -> expIntHash' no))) %
+>            (if coerce
+>               then expLam "x" $ var "happyReturn" %
+>                 (var (mkHappyOut accept_nonterm) % var "x")
+>               else expLam "x" $ expCase (var "x")
+>                 [ ( patCon (makeAbsSynCon accept_nonterm) ["z"],
+>                     var "happyReturn" % var "z" ),
+>                   (var "_other", var "notHappyAtAll")
+>                 ])
+>        ]
 >     where
->       maybe_tks | isNothing lexer' = str " tks"
->                 | otherwise = id
->       unmonad | use_monad = ""
->                 | otherwise = "happyRunIdentity "
+>       maybe_tks :: Maybe HsVar
+>       maybe_tks
+>         | isNothing lexer' = Just "tks"
+>         | otherwise        = Nothing
+>       unmonad
+>         | use_monad = id
+>         | otherwise = (var "happyRunIdentity" %)
 
->    produceAttrEntries starts''
->       = interleave "\n\n" (map f starts'')
+>    produceAttrEntries starts'' = map f starts''
 >     where
 >       f = case (use_monad,lexer') of
 >             (True,Just _)  -> \(name,_,_,_) -> monadAndLexerAE name
@@ -960,29 +962,35 @@ directive determins the API of the provided function.
 >             (False,Just _) -> error "attribute grammars not supported for non-monadic parsers with %lexer"
 >             (False,Nothing)-> \(name,_,_,_) -> regularAE name
 >
->       defaultAttr = fst (head attributes')
+>       defaultAttr = fromString $ fst (head attributes')
 >
->       monadAndLexerAE name
->         = str name . str " = "
->         . str "do { "
->         . str "f <- do_" . str name . str "; "
->         . str "let { (conds,attrs) = f happyEmptyAttrs } in do { "
->         . str "sequence_ conds; "
->         . str "return (". str defaultAttr . str " attrs) }}"
->       monadAE name
->         = str name . str " toks = "
->         . str "do { "
->         . str "f <- do_" . str name . str " toks; "
->         . str "let { (conds,attrs) = f happyEmptyAttrs } in do { "
->         . str "sequence_ conds; "
->         . str "return (". str defaultAttr . str " attrs) }}"
->       regularAE name
->         = str name . str " toks = "
->         . str "let { "
->         . str "f = do_" . str name . str " toks; "
->         . str "(conds,attrs) = f happyEmptyAttrs; "
->         . str "x = foldr seq attrs conds; "
->         . str "} in (". str defaultAttr . str " x)"
+>       monadAndLexerAE name = decFun (fromString name) [] $
+>         expDo [
+>           stmtBind (var "f") $
+>             var (fromString $ "do_" ++ name),
+>           stmtLet [
+>             decVal (patTup [var "conds", var "attrs"]) $
+>               var "f" % var "happyEmptyAttrs" ],
+>           stmtExp $ var "sequence_" % var "conds",
+>           stmtExp $ var "return" % (defaultAttr % var "attrs") ]
+>       monadAE name = decFun (fromString name) ["toks"] $
+>         expDo [
+>           stmtBind (var "f") $
+>             var (fromString $ "do_" ++ name) % var "toks",
+>           stmtLet [
+>             decVal (patTup [var "conds", var "attrs"]) $
+>               var "f" % var "happyEmptyAttrs" ],
+>           stmtExp $ var "sequence_" % var "conds",
+>           stmtExp $ var "return" % (defaultAttr % var "attrs") ]
+>       regularAE name = decFun (fromString name) ["toks"] $
+>         expLet [
+>           decVal (var "f") $
+>             var (fromString $ "do_" ++ name) % var "toks",
+>           decVal (patTup [var "conds", var "attrs"]) $
+>             var "f" % var "happyEmptyAttrs",
+>           decVal (var "x") $
+>             var "foldr" % var "seq" % var "attrs" % var "conds" ]
+>         (defaultAttr % var "x")
 
 ----------------------------------------------------------------------------
 -- Produce attributes declaration for attribute grammars

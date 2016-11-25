@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+-- TODO: get rid of those IsString instances. They are harmful.
 module HsSyn
   ( HsVar(..)
   , HsCon(..)
@@ -8,6 +9,10 @@ module HsSyn
   , HsQual(..)
   , HsComment(..)
   , HsHashLit(..)
+  , HsStmt(..)
+  , stmtBind
+  , stmtLet
+  , stmtExp
   , HsExp(..)
   , expLam
   , expApp
@@ -17,6 +22,7 @@ module HsSyn
   , expCase
   , expCase1
   , expLet
+  , expDo
   , expEnumFromTo
   , expInt
   , expIntHash
@@ -106,6 +112,20 @@ instance IsString HsComment where
 
 newtype HsHashLit = HsHashLit Bool
 
+data HsStmt =
+  HsStmtBind HsPat HsExp |
+  HsStmtLet [HsDec] |
+  HsStmtExp HsExp
+
+stmtBind :: HsPat -> HsExp -> HsStmt
+stmtBind = HsStmtBind
+
+stmtLet :: [HsDec] -> HsStmt
+stmtLet = HsStmtLet
+
+stmtExp :: HsExp -> HsStmt
+stmtExp = HsStmtExp
+
 data HsExp =
   HsExpUnsafeString String |
   HsExpVar (HsQual HsVar) |
@@ -117,6 +137,7 @@ data HsExp =
   HsExpRec HsCon [(HsVar, HsExp)] |
   HsExpCase HsExp [(HsPat, HsExp)] |
   HsExpLet [HsDec] HsExp |
+  HsExpDo [HsStmt] |
   HsExpEnumFromTo HsExp HsExp |
   HsExpInt HsHashLit Integer |
   HsExpStr HsHashLit String
@@ -151,6 +172,9 @@ expCase1 e p be = expCase e [(p, be)]
 
 expLet :: [HsDec] -> HsExp -> HsExp
 expLet = HsExpLet
+
+expDo :: [HsStmt] -> HsExp
+expDo = HsExpDo
 
 expEnumFromTo :: HsExp -> HsExp -> HsExp
 expEnumFromTo = HsExpEnumFromTo

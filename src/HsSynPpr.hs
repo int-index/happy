@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE PatternGuards #-}
+-- TODO: levels are actually only applicable to expressions. Separate them
+-- from normal ppr?
 module HsSynPpr
   ( Ppr(..)
   , Level(..)
@@ -37,6 +39,8 @@ precedence (Leftfix n) = n
 precedence (Rightfix n) = n
 precedence (Nonfix n) = n
 
+-- TODO: Write a function Exp -> Level instead of returning levels
+-- from ppr
 data Level =
   LevelAtom |
   LevelSymbol (Maybe Fixity) |
@@ -148,74 +152,108 @@ pprIntHash h n = (lvl, nDoc)
       HsHashLit False -> empty
     nDoc = text (show n) <> hDoc
 
-instance Ppr HsExp where
-  ppr (HsExpUnsafeString s) = (LevelUniv, text s)
-  ppr (HsExpVar v) = ppr v
-  ppr (HsExpCon c) = ppr c
-  ppr (HsExpApp eLhs eRhs) = (levelApp, appDoc)
+pprExp :: HsExp -> (Level, Doc)
+
+pprExp (HsExpUnsafeString s) = (LevelUniv, text s)
+
+pprExp (HsExpVar v) = ppr v
+
+pprExp (HsExpCon c) = ppr c
+
+pprExp (HsExpApp eLhs eRhs) = (levelApp, appDoc)
+  where
+    appDoc = hang eLhsDoc tw eRhsDoc
+    eLhsDoc = ppr' levelCtxAppLhs eLhs
+    eRhsDoc = ppr' levelCtxAppRhs eRhs
+
+pprExp (HsExpLam p e) = (LevelLam, lamDoc)
+  where
+    lamDoc = hang ("\\" <> pDoc <+> "->") tw eDoc
+    pDoc = ppr' LevelCtxLamPat p
+    eDoc = ppr' LevelCtxLamBody e
+
+pprExp (HsExpTup es) = (LevelAtom, pprTuple esDocs)
+  where
+    esDocs = map (ppr' LevelCtxElem) es
+
+pprExp (HsExpList es) = (LevelAtom, esDoc)
+  where
+    esDocs = map (ppr' LevelCtxElem) es
+    esDoc = pprList esDocs
+
+pprExp (HsExpRec c fs) = (LevelAtom, erDoc)
+  where
+    cDoc = ppr' LevelCtxUniv c
+    fsDocs = do
+      (name, e) <- fs
+      let
+        nameDoc = ppr' LevelCtxUniv name
+        eDoc = ppr' LevelCtxUniv e
+      [hang (nameDoc <+> equals) tw eDoc]
+    erDoc = cDoc <+> pprRec fsDocs
+
+pprExp (HsExpCase e bs) = (LevelUniv, caseDoc)
+  where
+    caseDoc = hang headerDoc tw bsDoc
+    headerDoc = "case" <+> eDoc <+> "of"
+    eDoc = ppr' LevelCtxCaseScrut e
+    bsDoc
+      | null bsDocs = "{}"
+      | otherwise   = vsep bsDocs
+    bsDocs = do
+      (p, be) <- bs
+      let
+        pDoc = ppr' LevelCtxCasePat p
+        beDoc = ppr' LevelCtxCaseExp be
+      [hang (pDoc <+> "->") tw beDoc]
+
+pprExp (HsExpLet ds e) = (LevelUniv, elDoc)
+  where
+    eDoc = ppr' LevelCtxUniv e
+    dsDoc = ppr' LevelCtxUniv ds
+    elDoc = sep [
+      "let",
+      nest tw dsDoc,
+      "in",
+      nest tw eDoc ]
+
+pprExp (HsExpDo ss) = (LevelLam, edDoc)
+  where
+    ssDocs = map (ppr' LevelCtxUniv) ss
+    edDoc = hang "do" tw (vsep ssDocs)
+
+pprExp (HsExpEnumFromTo eFrom eTo) = (LevelAtom, eeftDoc)
+  where
+    eFromDoc = ppr' LevelCtxElem eFrom
+    eToDoc = ppr' LevelCtxElem eTo
+    eeftDoc = brackets $ eFromDoc <+> ".." <+> eToDoc
+
+pprExp (HsExpInt h n) = pprIntHash h n
+
+pprExp (HsExpStr (HsHashLit False) s) = (LevelAtom, sDoc)
+  where
+    sDoc = text (show s)
+
+pprExp (HsExpStr (HsHashLit True) s) = (LevelAtom, sDoc <> "#")
+  where
+    sDoc
+      | all isPrint s = text (show s)
+      | otherwise = text (showHexStr s)
+
+instance Ppr HsStmt where
+  ppr (HsStmtBind p e) = (LevelUniv, sbDoc)
     where
-      appDoc = hang eLhsDoc tw eRhsDoc
-      eLhsDoc = ppr' levelCtxAppLhs eLhs
-      eRhsDoc = ppr' levelCtxAppRhs eRhs
-  ppr (HsExpLam p e) = (LevelLam, lamDoc)
-    where
-      lamDoc = hang ("\\" <> pDoc <+> "->") tw eDoc
-      pDoc = ppr' LevelCtxLamPat p
-      eDoc = ppr' LevelCtxLamBody e
-  ppr (HsExpTup es) = (LevelAtom, pprTuple esDocs)
-    where
-      esDocs = map (ppr' LevelCtxElem) es
-  ppr (HsExpList es) = (LevelAtom, esDoc)
-    where
-      esDocs = map (ppr' LevelCtxElem) es
-      esDoc = pprList esDocs
-  ppr (HsExpRec c fs) = (LevelAtom, erDoc)
-    where
-      cDoc = ppr' LevelCtxUniv c
-      fsDocs = do
-        (name, e) <- fs
-        let
-          nameDoc = ppr' LevelCtxUniv name
-          eDoc = ppr' LevelCtxUniv e
-        [hang (nameDoc <+> equals) tw eDoc]
-      erDoc = cDoc <+> pprRec fsDocs
-  ppr (HsExpCase e bs) = (LevelUniv, caseDoc)
-    where
-      caseDoc = hang headerDoc tw bsDoc
-      headerDoc = "case" <+> eDoc <+> "of"
-      eDoc = ppr' LevelCtxCaseScrut e
-      bsDoc
-        | null bsDocs = "{}"
-        | otherwise   = vsep bsDocs
-      bsDocs = do
-        (p, be) <- bs
-        let
-          pDoc = ppr' LevelCtxCasePat p
-          beDoc = ppr' LevelCtxCaseExp be
-        [hang (pDoc <+> "->") tw beDoc]
-  ppr (HsExpLet ds e) = (LevelUniv, elDoc)
-    where
+      pDoc = ppr' LevelCtxUniv p
       eDoc = ppr' LevelCtxUniv e
-      dsDoc = ppr' LevelCtxUniv ds
-      elDoc = sep [
-        "let",
-        nest tw dsDoc,
-        "in",
-        nest tw eDoc ]
-  ppr (HsExpEnumFromTo eFrom eTo) = (LevelAtom, eeftDoc)
+      sbDoc = hang (pDoc <+> "<-") tw eDoc
+  ppr (HsStmtLet ds) = (LevelUniv, slDoc)
     where
-      eFromDoc = ppr' LevelCtxElem eFrom
-      eToDoc = ppr' LevelCtxElem eTo
-      eeftDoc = brackets $ eFromDoc <+> ".." <+> eToDoc
-  ppr (HsExpInt h n) = pprIntHash h n
-  ppr (HsExpStr (HsHashLit False) s) = (LevelAtom, sDoc)
-    where
-      sDoc = text (show s)
-  ppr (HsExpStr (HsHashLit True) s) = (LevelAtom, sDoc <> "#")
-    where
-      sDoc
-        | all isPrint s = text (show s)
-        | otherwise = text (showHexStr s)
+      dsDocs = map (ppr' LevelCtxUniv) ds
+      slDoc = hang "let" tw (vsep dsDocs)
+  ppr (HsStmtExp e) = ppr e
+
+instance Ppr HsExp where
+  ppr = pprExp
 
 -- TODO: split into multiline literals when too long
 showHexStr :: String -> String

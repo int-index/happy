@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
--- TODO: get rid of those IsString instances. They are harmful.
 module HsSyn
   ( HsVar(..)
   , HsCon(..)
@@ -14,6 +13,7 @@ module HsSyn
   , stmtLet
   , stmtExp
   , HsExp(..)
+  , expUnsafeString
   , expLam
   , expApp
   , expTup
@@ -29,6 +29,7 @@ module HsSyn
   , expStr
   , expStrHash
   , HsTy(..)
+  , tyUnsafeString
   , tyCommentBefore
   , tyCommentAfter
   , tyCtx
@@ -38,6 +39,7 @@ module HsSyn
   , tyList
   , tyApp
   , HsPat(..)
+  , patUnsafeString
   , patCon
   , patTup
   , patList
@@ -45,11 +47,13 @@ module HsSyn
   , patIntHash
   , patWild
   , HsTyHead(..)
+  , tyHeadUnsafeString
   , tyHead
   , HsConDef(..)
   , conDef
   , conDefRec
   , HsDec(..)
+  , decUnsafeString
   , decComment
   , decPragma
   , decInlinePragma
@@ -142,10 +146,10 @@ data HsExp =
   HsExpInt HsHashLit Integer |
   HsExpStr HsHashLit String
 
-instance IsString HsExp where
-  fromString s@(c:_) | all isAlpha s =
-    if isUpper c then con (fromString s) else var (fromString s)
-  fromString s = HsExpUnsafeString s
+expUnsafeString :: String -> HsExp
+expUnsafeString s@(c:_) | all isAlpha s =
+  if isUpper c then con (fromString s) else var (fromString s)
+expUnsafeString s = HsExpUnsafeString s
 
 expLam :: HsPat -> HsExp -> HsExp
 expLam = HsExpLam
@@ -204,11 +208,11 @@ data HsTy =
   HsTyArr HsTy HsTy |
   HsTyForall HsTyVar HsTy
 
-instance IsString HsTy where
-  fromString "()" = HsTyTup []
-  fromString s@(c:_) | all isAlpha s =
-    if isUpper c then tyCon (fromString s) else tyVar (fromString s)
-  fromString s = HsTyUnsafeString s
+tyUnsafeString :: String -> HsTy
+tyUnsafeString "()" = HsTyTup []
+tyUnsafeString s@(c:_) | all isAlpha s =
+  if isUpper c then tyCon (fromString s) else tyVar (fromString s)
+tyUnsafeString s = HsTyUnsafeString s
 
 tyCommentBefore :: String -> HsTy -> HsTy
 tyCommentBefore = HsTyCommentBefore . fromString
@@ -250,8 +254,8 @@ data HsPat =
   HsPatInt HsHashLit Integer |
   HsPatWild
 
-instance IsString HsPat where
-  fromString = HsPatUnsafeString
+patUnsafeString :: String -> HsPat
+patUnsafeString = HsPatUnsafeString
 
 patCon :: HsCon -> [HsPat] -> HsPat
 patCon = HsPatCon
@@ -275,8 +279,8 @@ data HsTyHead =
   HsTyHeadUnsafeString String |
   HsTyHead HsTyCon [HsTyVar]
 
-instance IsString HsTyHead where
-  fromString = HsTyHeadUnsafeString
+tyHeadUnsafeString :: String -> HsTyHead
+tyHeadUnsafeString = HsTyHeadUnsafeString
 
 tyHead :: HsTyCon -> [HsTyVar] -> HsTyHead
 tyHead = HsTyHead
@@ -306,8 +310,8 @@ data HsDec =
   HsDecTypeSig [HsVar] HsTy |
   HsDecInst HsTyCon [HsTy] [HsDec]
 
-instance IsString HsDec where
-  fromString = HsDecUnsafeString
+decUnsafeString :: String -> HsDec
+decUnsafeString = HsDecUnsafeString
 
 decComment :: String -> HsDec
 decComment = HsDecComment . fromString

@@ -69,7 +69,7 @@ Produce the complete output file.
 >               target coerce ghc strict
 >     = prettyPrint $
 >       top_opts ++
->       fmap fromString (maybeToList module_header) ++
+>       map decUnsafeString (maybeToList module_header) ++
 >       -- comment goes *after* the module header, so that we
 >       -- don't screw up any OPTIONS pragmas in the header.
 >       [happyComment] ++
@@ -84,14 +84,14 @@ Produce the complete output file.
 >       produceEntries ++
 >       [produceStrict strict] ++
 >       produceAttributes attributes' attributetype' ++
->       fmap fromString (maybeToList module_trailer)
+>       map decUnsafeString (maybeToList module_trailer)
 >  where
 >    n_starts = length starts' :: Int
->    token' = fromString token_type' :: HsTy
->    monad_then' = fromString monad_then :: HsExp
->    monad_return' = fromString monad_return :: HsExp
->    monad_context' = fromString monad_context :: HsTy
->    monad_tycon' = fromString monad_tycon :: HsTy
+>    token_ty' = tyUnsafeString token_type'
+>    monad_then' = expUnsafeString monad_then
+>    monad_return' = expUnsafeString monad_return
+>    monad_context' = tyUnsafeString monad_context
+>    monad_tycon' = tyUnsafeString monad_tycon
 >
 >    nowarn_opts = decPragma "OPTIONS_GHC" "-w"
 >       -- XXX Happy-generated code is full of warnings.  Some are easy to
@@ -137,14 +137,14 @@ If we're using coercions, we need to generate the injections etc.
 >           decTypeSig [var (mkHappyIn n)] $
 >             tyVar (type_param n ty) `tyArr` happy_item,
 >           decFun (var (mkHappyIn n)) [var "x"] $
->             qvar "Happy_GHC_Exts" "unsafeCoerce#" % "x",
+>             qvar "Happy_GHC_Exts" "unsafeCoerce#" % var "x",
 >           decInlinePragma (mkHappyIn n) ]
 >
 >         extract n ty = [
 >           decTypeSig [var (mkHappyOut n)] $
 >             happy_item `tyArr` tyVar (type_param n ty),
 >           decFun (var (mkHappyOut n)) [var "x"] $
->             qvar "Happy_GHC_Exts" "unsafeCoerce#" % "x",
+>             qvar "Happy_GHC_Exts" "unsafeCoerce#" % var "x",
 >           decInlinePragma (mkHappyOut n) ]
 >       in
 >         [ decNewtype (tyHead "HappyAbsSyn" all_tyvars') -- see NOTE below
@@ -155,13 +155,13 @@ If we're using coercions, we need to generate the injections etc.
 >         concat [ inject n ty ++ extract n ty | (n,ty) <- assocs nt_types ] ++
 >          -- token injector
 >         [ decTypeSig ["happyInTok"] $
->             token' `tyArr` happy_item,
+>             token_ty' `tyArr` happy_item,
 >           decFun "happyInTok" [var "x"] $
 >             qvar "Happy_GHC_Exts" "unsafeCoerce#" % var "x",
 >           decInlinePragma "happyInTok" ] ++
 >           -- token extractor
 >         [ decTypeSig ["happyOutTok"] $
->             happy_item `tyArr` token',
+>             happy_item `tyArr` token_ty',
 >           decFun "happyOutTok" [var "x"] $
 >             qvar "Happy_GHC_Exts" "unsafeCoerce#" % var "x",
 >           decInlinePragma "happyOutTok" ]
@@ -188,7 +188,7 @@ example where this matters.
 >     | otherwise =
 >       let
 >         absSynCons =
->           [ conDef "HappyTerminal" [token'],
+>           [ conDef "HappyTerminal" [token_ty'],
 >             conDef "HappyErrorToken" [tyCon "Int"] ] ++
 >           [ conDef (makeAbsSynCon n) [tyVar (type_param n ty)] |
 >             (n, ty) <- assocs nt_types,
@@ -244,7 +244,7 @@ based parsers -- types aren't as important there).
 >           | otherwise = tyCon "Int"
 >         tokens r =
 >           case lexer' of
->             Nothing -> tyList token' `tyArr` r
+>             Nothing -> tyList token_ty' `tyArr` r
 >             Just _ -> r
 >         happyReductionDefinition =
 >           decComment $ unlines [
@@ -260,11 +260,11 @@ based parsers -- types aren't as important there).
 >             (prettyPrint (tyCon "HappyReduction" % monad_tycon') ++ " =")
 >             (happyReduction monad_tycon')
 >         happyReduction m =
->           intMaybeHash `tyArr` token' `tyArr` hstate `tyArr`
+>           intMaybeHash `tyArr` token_ty' `tyArr` hstate `tyArr`
 >           tyList hstate `tyArr` hstk `tyArr` tokens result
 >             where
 >               hstk   = tyCon "HappyStk" % tyCon "HappyAbsSyn"
->               hstate = "HappyState" % token' % (hstk `tyArr` tokens result)
+>               hstate = tyCon "HappyState" % token_ty' % (hstk `tyArr` tokens result)
 >               result = m % tyCon "HappyAbsSyn"
 
 %-----------------------------------------------------------------------------
@@ -338,10 +338,10 @@ happyMonadReduce to get polymorphic recursion.  Sigh.
 >         code' :: HsExp
 >         (code', monad_pass_token, m_monad_reduce) =
 >           case code of
->             '%':'%':code1 -> (fromString code1, True, Just "happyMonad2Reduce")
->             '%':'^':code1 -> (fromString code1, True, Just "happyMonadReduce")
->             '%':code1     -> (fromString code1, False, Just "happyMonadReduce")
->             _ -> (fromString code, False, Nothing)
+>             '%':'%':code1 -> (expUnsafeString code1, True, Just "happyMonad2Reduce")
+>             '%':'^':code1 -> (expUnsafeString code1, True, Just "happyMonadReduce")
+>             '%':code1     -> (expUnsafeString code1, False, Just "happyMonadReduce")
+>             _ -> (expUnsafeString code, False, Nothing)
 
 >         -- adjust the nonterminal number for the array-based parser
 >         -- so that nonterminals start at zero.
@@ -477,7 +477,7 @@ The token conversion function.
 >               var "happyError'" % expTup [var "tk", expList []]
 >             caseExp =
 >               expCase (var "tk") $
->                 [(fromString eof', eofAction (var "tk"))] ++
+>                 [(patUnsafeString eof', eofAction (var "tk"))] ++
 >                 map doToken token_rep ++
 >                 [(patWild, defaultExp)]
 >             letExp =
@@ -489,7 +489,7 @@ The token conversion function.
 >           in
 >             decFun "happyNewToken"
 >               [var "action", var "sts", var "stk"]
->               (fromString lexer'' % lamExp),
+>               (expUnsafeString lexer'' % lamExp),
 >           decFun "happyError_"
 >             [var "explist", tokPat eof, var "tk"]
 >             (var "happyError'" % expTup [var "tk", var "explist"]),
@@ -541,7 +541,7 @@ Use a variable rather than '_' to replace '$$', so we can use it on
 the left hand side of '@'.
 
 >         removeDollarDollar :: String -> HsPat
->         removeDollarDollar xs = fromString $
+>         removeDollarDollar xs = patUnsafeString $
 >           case mapDollarDollar xs of
 >             Nothing -> xs
 >             Just fn -> fn "happy_dollar_dollar"
@@ -552,7 +552,7 @@ the left hand side of '@'.
 >       Nothing -> var pat
 >       Just fn ->
 >         -- TODO: figure out how to update mapDollarDollar
->         fromString (fn (pstr pat ""))
+>         patUnsafeString (fn (prettyPrint pat))
 >     where
 >         tok_str_fn = case lookup t token_rep of
 >           Nothing -> Nothing
@@ -874,7 +874,7 @@ MonadStuff:
 >              monad_return' % var "a"),
 >          decTypeSig ["happyError'"] (
 >            monad_context' `tyCtx`
->            tyTup [tyList token', tyList (tyVar "String")] `tyArr`
+>            tyTup [tyList token_ty', tyList (tyVar "String")] `tyArr`
 >            monad_tycon' % tyVar "a" ),
 >          decFun "happyError'" [] (
 >            (if use_monad then id else (\x -> var "." % con "HappyIdentity" % x))
@@ -888,7 +888,7 @@ MonadStuff:
 >          decFun "happyReturn1" [] (var "happyReturn"),
 >          decTypeSig ["happyError'"] (
 >            monad_context' `tyCtx`
->            tyTup [token', tyList (tyVar "String")] `tyArr`
+>            tyTup [token_ty', tyList (tyVar "String")] `tyArr`
 >            monad_tycon' % tyVar "a" ),
 >          decFun "happyError'" [var "tk"] (
 >            (if use_monad then id else (con "HappyIdentity" %))
@@ -902,10 +902,10 @@ directive determins the API of the provided function.
 >    errorHandler =
 >      case error_handler' of
 >        Just h  -> case error_sig' of
->          ErrorHandlerTypeExpList -> fromString h
+>          ErrorHandlerTypeExpList -> expUnsafeString h
 >          ErrorHandlerTypeDefault ->
 >            expLam (patTup [var "tokens", patWild]) $
->              fromString h % var "tokens"
+>              expUnsafeString h % var "tokens"
 >        Nothing -> case lexer' of
 >          Nothing ->
 >            expLam (patTup [var "tokens", patWild]) $
@@ -937,10 +937,10 @@ directive determins the API of the provided function.
 >                  TargetHaskell -> var (mkActionName no)
 >                  TargetArrayBased -> expIntHash' no))) %
 >            (if coerce
->               then expLam "x" $ var "happyReturn" %
+>               then expLam (var "x") $ var "happyReturn" %
 >                 (var (mkHappyOut accept_nonterm) % var "x")
->               else expLam "x" $ expCase (var "x")
->                 [ ( patCon (makeAbsSynCon accept_nonterm) ["z"],
+>               else expLam (var "x") $ expCase (var "x")
+>                 [ ( patCon (makeAbsSynCon accept_nonterm) [var "z"],
 >                     var "happyReturn" % var "z" ),
 >                   (var "_other", var "notHappyAtAll")
 >                 ])
@@ -962,7 +962,7 @@ directive determins the API of the provided function.
 >             (False,Just _) -> error "attribute grammars not supported for non-monadic parsers with %lexer"
 >             (False,Nothing)-> \(name,_,_,_) -> regularAE name
 >
->       defaultAttr = fromString $ fst (head attributes')
+>       defaultAttr = expUnsafeString $ fst (head attributes')
 >
 >       monadAndLexerAE name = decFun (fromString name) [] $
 >         expDo [
@@ -973,7 +973,7 @@ directive determins the API of the provided function.
 >               var "f" % var "happyEmptyAttrs" ],
 >           stmtExp $ var "sequence_" % var "conds",
 >           stmtExp $ var "return" % (defaultAttr % var "attrs") ]
->       monadAE name = decFun (fromString name) ["toks"] $
+>       monadAE name = decFun (fromString name) [var "toks"] $
 >         expDo [
 >           stmtBind (var "f") $
 >             var (fromString $ "do_" ++ name) % var "toks",
@@ -982,7 +982,7 @@ directive determins the API of the provided function.
 >               var "f" % var "happyEmptyAttrs" ],
 >           stmtExp $ var "sequence_" % var "conds",
 >           stmtExp $ var "return" % (defaultAttr % var "attrs") ]
->       regularAE name = decFun (fromString name) ["toks"] $
+>       regularAE name = decFun (fromString name) [var "toks"] $
 >         expLet [
 >           decVal (var "f") $
 >             var (fromString $ "do_" ++ name) % var "toks",
@@ -1006,7 +1006,7 @@ directive determins the API of the provided function.
 >     formatAttribute (ident, typ) = (ident', typ')
 >       where
 >         ident' = fromString ident :: HsVar
->         typ' = fromString typ :: HsTy
+>         typ' = tyUnsafeString typ :: HsTy
 >     attrError (ident, _) = (ident', errExp)
 >       where
 >         ident' = fromString ident :: HsVar
@@ -1015,7 +1015,7 @@ directive determins the API of the provided function.
 >     attrHeader =
 >       case attributeType of
 >         [] -> tyHead "HappyAttributes" []
->         _  -> fromString attributeType
+>         _  -> tyHeadUnsafeString attributeType
 
 
 -----------------------------------------------------------------------------

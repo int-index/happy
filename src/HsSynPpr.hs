@@ -6,7 +6,6 @@
 module HsSynPpr
   ( Ppr(..)
   , Level(..)
-  , pstr
   , prettyPrint
   ) where
 
@@ -15,9 +14,6 @@ import Data.Function
 import HsSyn
 import Text.PrettyPrint
 import Numeric (showHex)
-
-pstr :: Ppr a => a -> String -> String
-pstr = (++) . prettyPrint
 
 prettyPrint :: Ppr a => a -> String
 prettyPrint = render . ppr' LevelCtxUniv
